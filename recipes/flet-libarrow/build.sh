@@ -43,13 +43,17 @@ COMMON_ARGS=(
     -DARROW_SIMD_LEVEL=NONE
     -DARROW_BUILD_SHARED=ON -DARROW_BUILD_STATIC=OFF
     -DARROW_IPC=ON
-    # pyarrow hard-requires ARROW_COMPUTE (CMakeLists FATAL_ERROR otherwise); it
-    # is the irreducible floor (builds a separate libarrow_compute). Keep the
-    # heavy string-kernel deps (re2/utf8proc, which drag in abseil) OFF for now
-    # and see if the base compute layer cross-compiles without them.
-    -DARROW_COMPUTE=ON -DARROW_CSV=OFF -DARROW_JSON=OFF -DARROW_PARQUET=OFF
+    # pyarrow 24 builds 7 UNCONDITIONAL Cython modules (lib, _compute, _csv,
+    # _feather, _fs, _json, _pyarrow_cpp_tests) and FATAL_ERRORs unless Arrow C++
+    # was built with COMPUTE + CSV; it also can't link _json/_fs/_feather without
+    # JSON + FILESYSTEM + IPC(feather). So COMPUTE+CSV+JSON+FILESYSTEM+IPC is
+    # pyarrow's true irreducible floor. Feather rides ARROW_IPC; JSON pulls only
+    # header-only RapidJSON (bundled). Heavy optional deps stay OFF: re2/utf8proc
+    # (compute string kernels → abseil), parquet/dataset/acero/flight/orc/gandiva,
+    # and all cloud filesystems (S3/GCS/Azure/HDFS).
+    -DARROW_COMPUTE=ON -DARROW_CSV=ON -DARROW_JSON=ON -DARROW_PARQUET=OFF
     -DARROW_DATASET=OFF -DARROW_ACERO=OFF -DARROW_FLIGHT=OFF -DARROW_GANDIVA=OFF
-    -DARROW_FILESYSTEM=OFF
+    -DARROW_FILESYSTEM=ON
     -DARROW_WITH_BROTLI=OFF -DARROW_WITH_BZ2=OFF -DARROW_WITH_LZ4=OFF
     -DARROW_WITH_SNAPPY=OFF -DARROW_WITH_ZLIB=OFF -DARROW_WITH_ZSTD=OFF
     -DARROW_WITH_UTF8PROC=OFF -DARROW_WITH_RE2=OFF
