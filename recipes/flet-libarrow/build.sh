@@ -43,7 +43,11 @@ COMMON_ARGS=(
     -DARROW_SIMD_LEVEL=NONE
     -DARROW_BUILD_SHARED=ON -DARROW_BUILD_STATIC=OFF
     -DARROW_IPC=ON
-    -DARROW_COMPUTE=OFF -DARROW_CSV=OFF -DARROW_JSON=OFF -DARROW_PARQUET=OFF
+    # pyarrow hard-requires ARROW_COMPUTE (CMakeLists FATAL_ERROR otherwise); it
+    # is the irreducible floor (builds a separate libarrow_compute). Keep the
+    # heavy string-kernel deps (re2/utf8proc, which drag in abseil) OFF for now
+    # and see if the base compute layer cross-compiles without them.
+    -DARROW_COMPUTE=ON -DARROW_CSV=OFF -DARROW_JSON=OFF -DARROW_PARQUET=OFF
     -DARROW_DATASET=OFF -DARROW_ACERO=OFF -DARROW_FLIGHT=OFF -DARROW_GANDIVA=OFF
     -DARROW_FILESYSTEM=OFF
     -DARROW_WITH_BROTLI=OFF -DARROW_WITH_BZ2=OFF -DARROW_WITH_LZ4=OFF
@@ -76,8 +80,11 @@ else
         -DCMAKE_SHARED_LINKER_FLAGS="-framework CoreFoundation"
 fi
 
-echo "=== build + install libarrow ==="
-cmake --build . --target arrow_shared -j "${CPU_COUNT:-4}"
+echo "=== build + install libarrow (+ libarrow_compute) ==="
+# No --target: build the default ALL target so both arrow_shared and
+# arrow_compute_shared (ARROW_COMPUTE=ON) get built. Components are OFF, so ALL
+# is just the two Arrow libs + bundled xsimd.
+cmake --build . -j "${CPU_COUNT:-4}"
 cmake --install .
 
 # (pyarrow ships its own arrow_python C++ sources — its CMake sets
