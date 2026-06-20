@@ -1,0 +1,17 @@
+package:
+  name: flet-libmupdf
+  # Pinned to the MuPDF release that PyMuPDF 1.27.2.x downloads & links against
+  # (setup.py: version_mupdf = '1.27.2'). Keep in lockstep with the pymupdf recipe.
+  version: 1.27.2
+
+build:
+  number: 0
+
+source:
+  # The official "-source.tar.gz" bundles all thirdparty (freetype, harfbuzz,
+  # openjpeg, jbig2dec, libjpeg, lcms2, zlib, mujs, gumbo, brotli, extract) and
+  # ships a pre-generated generated/ tree, so the build is self-contained.
+  url: https://mupdf.com/downloads/archive/mupdf-1.27.2-source.tar.gz
+
+about:
+  license_file: COPYING
