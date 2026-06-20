@@ -22,6 +22,23 @@ fi
 [ -n "${CPP:-}" ] && [ -d "$CPP" ] || { echo "ERROR: cannot find Arrow cpp/ source under $PWD"; exit 1; }
 echo "Arrow C++ source: $CPP"
 
+# Arrow's vendored date/locale code has two Android-only build breakages (the iOS
+# path uses ios.mm + CoreFoundation and is fine). Patch them in place:
+#   (1) musl/strptime.c calls nl_langinfo() in the locale (%c/%x/%X) cases, but
+#       nl_langinfo is undeclared on Android API 24 (added in API 26) -> guard
+#       those cases out on Android (Arrow's date parsing uses ISO formats anyway).
+#   (2) datetime/tz.cpp's Android tzdata path uses init_tzdb() + reads the private
+#       time_zone::parse_from_android_tzdata(); both the declaration (tz.h:142) and
+#       the `friend init_tzdb` (tz.h:832) are gated on BUILD_TZ_LIB, which Arrow
+#       never defines -> define it for the date translation unit on Android.
+if [ -n "${NDK_ROOT:-}" ]; then
+    echo "=== patch Arrow vendored date/locale for Android ==="
+    perl -0777 -pi -e 's/#ifdef HAVE_LANGINFO/#if defined(HAVE_LANGINFO) && !defined(__ANDROID__)/g' \
+        "$CPP/src/arrow/vendored/musl/strptime.c"
+    perl -0777 -pi -e 's{#include "datetime/visibility.h"}{#define BUILD_TZ_LIB 1\n#include "datetime/visibility.h"}' \
+        "$CPP/src/arrow/vendored/datetime.cpp"
+fi
+
 # Map the target arch to Arrow's CPU flag.
 case "${HOST_ARCH:-${ANDROID_ABI:-}}" in
     arm64*|aarch64) CPU=aarch64 ;;
