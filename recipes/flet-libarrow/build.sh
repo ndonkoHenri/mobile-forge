@@ -59,6 +59,14 @@ COMMON_ARGS=(
     -DARROW_WITH_UTF8PROC=OFF -DARROW_WITH_RE2=OFF
     -DARROW_MIMALLOC=OFF -DARROW_JEMALLOC=OFF -DARROW_WITH_BACKTRACE=OFF
     -DARROW_DEPENDENCY_SOURCE=BUNDLED
+    # zlib can't actually be turned off here: Arrow force-enables it on Apple
+    # because the vendored `date` lib decompresses the system tzdata via zlib in
+    # ios.mm (GZipCodec also pulls it). The BUNDLED zlib_ep builds for the HOST
+    # arch — fine when host==target, but on an arm64 mac it produces an arm64
+    # libz.a that fails to link the x86_64 simulator slice. Use the platform's
+    # SYSTEM zlib instead: the iOS SDK ships libz.tbd and the Android NDK ships
+    # libz.so — both correct-arch and present on-device at runtime (no bundling).
+    -DZLIB_SOURCE=SYSTEM
     -DARROW_BUILD_TESTS=OFF -DARROW_BUILD_BENCHMARKS=OFF
     -DARROW_BUILD_EXAMPLES=OFF -DARROW_BUILD_UTILITIES=OFF -DARROW_CUDA=OFF
 )
@@ -81,6 +89,8 @@ else
         -DCMAKE_OSX_SYSROOT="$SDK_ROOT" \
         -DCMAKE_OSX_ARCHITECTURES="$HOST_ARCH" \
         -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+        -DZLIB_INCLUDE_DIR="$SDK_ROOT/usr/include" \
+        -DZLIB_LIBRARY="$SDK_ROOT/usr/lib/libz.tbd" \
         -DCMAKE_SHARED_LINKER_FLAGS="-framework CoreFoundation"
 fi
 
