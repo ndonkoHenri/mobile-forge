@@ -1,0 +1,124 @@
+# Map the slice arch to Arrow's CPU flag. Under CMAKE_SYSTEM_NAME=iOS (and even
+# under the NDK toolchain) Arrow's SetupCxxFlags can see an empty
+# CMAKE_SYSTEM_PROCESSOR and FATAL_ERROR "Unknown system processor"; setting
+# ARROW_CPU_FLAG directly bypasses that. 32-bit arches are excluded, so x86_64 ->
+# x86 and arm64/arm64-v8a -> aarch64 covers every shipped slice.
+# {% set arrow_cpu = 'x86' if 'x86' in arch else 'aarch64' %}
+package:
+  name: pyarrow
+  version: 24.0.0
+  # Arrow's CMake configs carry a 32/64-bit gate (ArrowConfigVersion.cmake:
+  # PACKAGE_VERSION_UNSUITABLE unless sizeof(void*)==8), so a 64-bit flet-libarrow
+  # cannot be consumed by a 32-bit pyarrow. Drop the 32-bit Android ABIs.
+  excluded_arches: [armeabi-v7a, x86]
+
+requirements:
+  build:
+    # pyarrow builds via scikit-build-core + CMake; with forge's --no-isolation
+    # these must be in the build venv. scikit-build-core, cython>=3.1, libcst,
+    # numpy and setuptools_scm come from pyarrow's own build-system.requires.
+    - cmake
+    - ninja
+  host:
+    # Build needs the cross-target NumPy headers (arrow_python links Python3::NumPy);
+    # numpy is import-guarded at runtime (optional), so it is NOT promoted to
+    # Requires-Dist (forge only promotes flet-* host deps).
+    - numpy ^2.0.0
+# {% if sdk == 'android' %}
+    # Android: serious_python copies flet-libarrow's opt/lib/libarrow.so +
+    # libarrow_compute.so into the APK jniLibs dir; pyarrow's extension modules
+    # resolve them by DT_NEEDED basename (no rpath needed — same as duckdb's
+    # libc++_shared). So flet-libarrow is a real runtime dep -> requirements.host
+    # (promoted to Requires-Dist, ABI-pinned to the libarrow.2400 SONAME).
+    - flet-libarrow ==24
+    # pyarrow's + libarrow's .so are C++ -> need libc++_shared.so at runtime.
+    - flet-libcpp-shared >=27.2.12479018
+# {% else %}
+  host_build:
+    # iOS has no jniLibs equivalent: flet relocates loadable dylibs into the signed
+    # app and RENAMES them to *.fwork, which pyarrow's baked LC_LOAD_DYLIB
+    # (@rpath/libarrow.2400.dylib) cannot follow. So on iOS we BUNDLE the arrow
+    # dylibs INTO the pyarrow wheel (PYARROW_BUNDLE_ARROW_CPP=ON, see script_env)
+    # next to pyarrow's own .so, where its @loader_path/ rpath resolves them.
+    # flet-libarrow is then build-only (headers + dylibs to copy + CMake config),
+    # NOT promoted to Requires-Dist (its standalone wheel never ships on iOS).
+    - flet-libarrow ==24
+# {% endif %}
+
+patches:
+  # iOS: preload the bundled libarrow*.dylib before importing pyarrow.lib so dyld
+  # can resolve the extension modules' @rpath link after flet relocates each .so
+  # into its own framework. No-op on Android/desktop.
+  - mobile.patch
+  # Android: install pyarrow's own libarrow_python.so into the wheel's opt/lib (not
+  # the package dir) so serious_python surfaces it via the APK jniLibs — the
+  # extension modules then resolve it by DT_NEEDED basename, like libarrow /
+  # libarrow_compute. Avoids needing a $ORIGIN runpath (CMake can't emit one on
+  # Android). Guarded by if(ANDROID), so it's a no-op on iOS/desktop.
+  - android-arrow-python-optlib.patch
+
+build:
+  number: 1
+  script_env:
+    # Belt-and-suspenders: hard-lock every OPTIONAL component OFF regardless of
+    # what the flet-libarrow Arrow C++ build enables. pyarrow's define_option macro
+    # honors PYARROW_WITH_<NAME> env over Arrow's own option. The MANDATORY modules
+    # (lib/_compute/_csv/_feather/_fs/_json/_pyarrow_cpp_tests) have no toggle —
+    # they track the Arrow C++ build (which we build with COMPUTE+CSV+JSON+
+    # FILESYSTEM+IPC, all heavier components OFF).
+    PYARROW_WITH_PARQUET: "0"
+    PYARROW_WITH_PARQUET_ENCRYPTION: "0"
+    PYARROW_WITH_DATASET: "0"
+    PYARROW_WITH_ACERO: "0"
+    PYARROW_WITH_SUBSTRAIT: "0"
+    PYARROW_WITH_FLIGHT: "0"
+    PYARROW_WITH_GANDIVA: "0"
+    PYARROW_WITH_ORC: "0"
+    PYARROW_WITH_CUDA: "0"
+    PYARROW_WITH_S3: "0"
+    PYARROW_WITH_GCS: "0"
+    PYARROW_WITH_AZURE: "0"
+    PYARROW_WITH_HDFS: "0"
+# {% if sdk == 'android' %}
+    # Runtime libs all resolve by DT_NEEDED basename from the APK jniLibs: libarrow /
+    # libarrow_compute come from flet-libarrow, and pyarrow's own libarrow_python.so
+    # is relocated into opt/lib by android-arrow-python-optlib.patch so it lands there
+    # too (no $ORIGIN runpath needed — CMake can't emit one on Android). On-device
+    # verified (5/5 steps).
+    CMAKE_ARGS: >-
+      -DPYARROW_CPP_HOME={purelib}/opt
+      -DCMAKE_PREFIX_PATH={purelib}/opt
+      -DARROW_CPU_FLAG={{ arrow_cpu }}
+      -DARROW_SIMD_LEVEL=NONE
+      -DCMAKE_TOOLCHAIN_FILE={NDK_ROOT}/build/cmake/android.toolchain.cmake
+      -DANDROID_ABI={ANDROID_ABI}
+      -DANDROID_NATIVE_API_LEVEL={ANDROID_API_LEVEL}
+      -DANDROID_STL=c++_shared
+      -DCMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/env
+      -DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384
+      -DCMAKE_MODULE_LINKER_FLAGS=-Wl,-z,max-page-size=16384
+      -DPython3_EXECUTABLE={CROSS_VENV_PYTHON}
+      -DPython3_INCLUDE_DIR={HOST_PYTHON_HOME}/include/python{py_version_short}
+      -DPython3_LIBRARY={HOST_PYTHON_HOME}/lib/libpython{py_version_short}.so
+      -DPython3_NumPy_INCLUDE_DIR={purelib}/numpy/_core/include
+# {% else %}
+    # The `ninja` pip package crashes importing on the iOS crossenv python
+    # (sysconfig.get_preferred_scheme('user') -> 'posix_user' invalid on iOS), so
+    # use the Makefiles generator on iOS; scikit-build-core then never imports ninja.
+    CMAKE_GENERATOR: Unix Makefiles
+    CMAKE_ARGS: >-
+      -DPYARROW_CPP_HOME={purelib}/opt
+      -DCMAKE_PREFIX_PATH={purelib}/opt
+      -DARROW_CPU_FLAG={{ arrow_cpu }}
+      -DARROW_SIMD_LEVEL=NONE
+      -DPYARROW_BUNDLE_ARROW_CPP=ON
+      -DCMAKE_SYSTEM_NAME=iOS
+      -DCMAKE_OSX_SYSROOT={{ sdk }}
+      -DCMAKE_OSX_DEPLOYMENT_TARGET={{ sdk_version }}
+      -DCMAKE_OSX_ARCHITECTURES={{ arch }}
+      -DCMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/env
+      -DPython3_EXECUTABLE={CROSS_VENV_PYTHON}
+      -DPython3_INCLUDE_DIR={HOST_PYTHON_HOME}/include/python{py_version_short}
+      -DPython3_LIBRARY={HOST_PYTHON_HOME}/lib/libpython{py_version_short}.dylib
+      -DPython3_NumPy_INCLUDE_DIR={purelib}/numpy/_core/include
+# {% endif %}

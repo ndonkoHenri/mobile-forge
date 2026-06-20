@@ -1,0 +1,30 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -532,10 +532,23 @@
+ endif()
+ set_target_properties(arrow_python PROPERTIES VERSION "${PYARROW_FULL_SO_VERSION}"
+                                               SOVERSION "${PYARROW_SO_VERSION}")
+-install(TARGETS arrow_python
+-        ARCHIVE DESTINATION .
+-        LIBRARY DESTINATION .
+-        RUNTIME DESTINATION .)
++# mobile-forge (Android): install libarrow_python.so into the wheel's opt/lib
++# (a sibling of the pyarrow package, via scikit-build's platlib staging dir)
++# instead of inside pyarrow/. serious_python then surfaces it through the APK
++# jniLibs, where the extension modules resolve it by DT_NEEDED basename — same
++# as libarrow / libarrow_compute (from flet-libarrow). This avoids needing an
++# $ORIGIN runpath, which CMake cannot emit on Android.
++if(ANDROID AND SKBUILD_PLATLIB_DIR)
++  install(TARGETS arrow_python
++          ARCHIVE DESTINATION "${SKBUILD_PLATLIB_DIR}/opt/lib"
++          LIBRARY DESTINATION "${SKBUILD_PLATLIB_DIR}/opt/lib"
++          RUNTIME DESTINATION "${SKBUILD_PLATLIB_DIR}/opt/lib")
++else()
++  install(TARGETS arrow_python
++          ARCHIVE DESTINATION .
++          LIBRARY DESTINATION .
++          RUNTIME DESTINATION .)
++endif()
+ 
+ set(PYARROW_CPP_ENCRYPTION_SRCS ${PYARROW_CPP_SOURCE_DIR}/parquet_encryption.cc)
+ if(NOT PYARROW_BUILD_PARQUET_ENCRYPTION)

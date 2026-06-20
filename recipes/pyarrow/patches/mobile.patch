@@ -1,0 +1,32 @@
+--- a/pyarrow/__init__.py
++++ b/pyarrow/__init__.py
+@@ -56,6 +56,29 @@
+     except ImportError:
+         __version__ = None
+ 
++# mobile-forge: preload the bundled Arrow C++ runtime so dyld can resolve the
++# extension modules' @rpath link to libarrow after flet relocates each .so into
++# its own framework on iOS. No-op where the dylibs aren't bundled here.
++try:
++    import ctypes as _ctypes
++    _pyarrow_dir = _os.path.dirname(_os.path.abspath(__file__))
++    for _arrow_lib in ("libarrow.2400.dylib",
++                       "libarrow_compute.2400.dylib",
++                       "libarrow_python.2400.dylib"):
++        for _cand in (
++            _os.path.join(_pyarrow_dir, _arrow_lib),
++            _os.path.join(_pyarrow_dir, _arrow_lib[:-len(".dylib")] + ".0.0.dylib"),
++            _os.path.join(_pyarrow_dir, _arrow_lib[:-len(".dylib")] + ".fwork"),
++        ):
++            if _os.path.exists(_cand):
++                try:
++                    _ctypes.CDLL(_cand, mode=_ctypes.RTLD_GLOBAL)
++                except OSError:
++                    pass
++                break
++except Exception:
++    pass
++
+ from pyarrow.lib import (BuildInfo, CppBuildInfo, RuntimeInfo, set_timezone_db_path,
+                          MonthDayNano, VersionInfo, build_info, cpp_build_info,
+                          cpp_version, cpp_version_info, runtime_info,
