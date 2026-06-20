@@ -80,10 +80,9 @@ echo "=== build + install libarrow ==="
 cmake --build . --target arrow_shared -j "${CPU_COUNT:-4}"
 cmake --install .
 
-# pyarrow compiles arrow_python from the Arrow C++ python sources; ship them so
-# the pyarrow recipe can point PYARROW_CPP_ROOT_DIR at $PREFIX/src.
-mkdir -p "$PREFIX/src/arrow"
-cp -R "$CPP/src/arrow/python" "$PREFIX/src/arrow/python"
+# (pyarrow ships its own arrow_python C++ sources — its CMake sets
+# PYARROW_CPP_ROOT_DIR=pyarrow/src — so flet-libarrow only needs to provide the
+# built libarrow + headers, installed above.)
 
 echo "=== installed ==="
 ls -la "$PREFIX/lib" | grep -i arrow || true
