@@ -1,0 +1,75 @@
+package:
+  name: pymupdf
+  version: 1.27.2.3
+
+patches:
+  # crossenv's cross-python fakes platform.system()=='Linux', which breaks two
+  # host-side steps of PyMuPDF's C++-wrapper codegen. The patch (to setup.py):
+  #   1. symlinks the libclang wheel's host libclang.dylib to the libclang.so
+  #      name clang.cindex looks for under the faked platform; and
+  #   2. forces MuPDF's cpp.py to emit its macOS int8_t..uint64_t/FILE/va_list
+  #      typedefs (otherwise skipped on "linux"), without which libclang — which
+  #      has no system headers here — parses MuPDF structs incompletely and the
+  #      generator crashes in class_add_iterator.
+  - crossenv-codegen.patch
+
+requirements:
+  build:
+    # PyMuPDF's build (setup.py -> pipcl -> mupdf/scripts/mupdfwrap.py) needs SWIG
+    # to wrap MuPDF's C++ API, and python clang bindings (libclang) to parse the
+    # MuPDF headers when generating the C++ wrapper. Both run on the host.
+    - swig
+    - libclang
+    - setuptools
+# {% if sdk == 'android' %}
+  host:
+    # The MuPDF C++ wrapper (libmupdfcpp.so) + _mupdf.so are C++; on Android they
+    # link libc++_shared.so, which the device runtime doesn't provide unless bundled.
+    - flet-libcpp-shared >=27.2.12479018
+# {% endif %}
+
+build:
+  number: 0
+  script_env:
+    # PyMuPDF's pipcl links _extra.so via base_linker(), which uses $LD when set
+    # and otherwise falls back to the host `c++` (Apple ld then rejects the GNU
+    # `-z` flags in forge's LDFLAGS). forge exports CC/CXX but not LD, so point
+    # LD at the cross C++ compiler. (MuPDF's own _mupdf.so already uses $CXX.)
+    LD: "{CXX}"
+    # One self-contained wheel: PyMuPDF python + _extra ext ('p') and the MuPDF
+    # shared libraries ('b'). Drop 'd' (build-time dev headers/libs) — not needed
+    # at runtime.
+    PYMUPDF_SETUP_FLAVOUR: pb
+    # PyMuPDF builds its bundled MuPDF 1.27.2 itself. mupdfwrap.py builds the C
+    # library by running the `make` token taken verbatim from $MUPDF_MAKE
+    # (scripts/wrap/__main__.py:_get_m_command), appending its own make args
+    # (build=release shared=yes OUT=... libs ...). We inject the cross toolchain
+    # and Makefile knobs here as make *command-line* vars, which override
+    # MuPDF Makerules' `CC = xcrun cc` defaults. HAVE_OBJCOPY=no keeps the
+    # portable hexdump font codegen (proven in flet-libmupdf); host-lib-dragging
+    # optionals are disabled. OS=Linux avoids the host (Darwin) conventions.
+    MUPDF_MAKE: >-
+      make OS=Linux CC={CC} CXX={CXX} AR={AR} RANLIB={RANLIB}
+      HAVE_OBJCOPY=no HAVE_LIBCRYPTO=no HAVE_GLUT=no HAVE_X11=no HAVE_CURL=no
+      barcode=no tesseract=no
+      XCFLAGS="{CFLAGS} {CPPFLAGS} -fPIC" XCXXFLAGS="-std=c++14"
+      XLDFLAGS="{LDFLAGS}" XLIBS="-llog"
+    # Don't build MuPDF with Tesseract OCR (extra heavy thirdparty we don't need).
+    PYMUPDF_SETUP_MUPDF_TESSERACT: "0"
+    # pipcl (both MuPDF's and PyMuPDF's) shells out to `python3.12-config` to get
+    # the Python include/link flags for _mupdf.so / _extra.so. The crossenv
+    # cross-python ships no python3.12-config, so point pipcl at the target
+    # python's own config script (runs fine via bash on the host and reports the
+    # target include/lib paths).
+    PIPCL_PYTHON_CONFIG: bash {HOST_PYTHON_HOME}/bin/python{py_version_short}-config
+    # Android link flags appended to every link step (C++ wrapper / _mupdf / _extra,
+    # and the MuPDF C lib via make's env LDFLAGS):
+    #  -llog: the NDK auto-defines __ANDROID__, activating MuPDF's
+    #    __android_log_print path, which lives in the NDK `liblog`.
+    #  -lpython3.12: forge links with -Wl,--no-undefined, so the SWIG/_extra
+    #    Python C-API symbols (PyExc_*, PyErr_*, ...) must resolve at link time.
+    #    Android needs the extension to link libpython (the support tree ships
+    #    libpython3.12.so and -L<target>/lib is already on the link line).
+# {% if sdk == 'android' %}
+    LDFLAGS: -llog -lpython{py_version_short}
+# {% endif %}

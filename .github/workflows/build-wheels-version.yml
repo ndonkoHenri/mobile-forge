@@ -8,6 +8,16 @@ on:
           Python version:
         required: true
         type: string
+      canonical_python:
+        description: |
+          The single Python version on which Python-independent recipes (those with
+          a build.sh -> py3-none-<plat> wheel) are built. When this version's leg is
+          NOT the canonical one, those recipes are skipped — their wheels are identical
+          across Python versions, so other legs only emit publish-time duplicates.
+          Empty = no gating (build every recipe on every version).
+        required: false
+        type: string
+        default: ""
       archs:
         description: |
           Architectures (comma-separated):
@@ -57,6 +67,13 @@ on:
           - "3.13"
           - "3.14"
         default: "3.12"
+      canonical_python:
+        description: |
+          The single Python version on which Python-independent recipes (those with
+          a build.sh -> py3-none-<plat> wheel) are built. Leave empty for a standalone
+          dispatch (no gating — build every recipe on this version):
+        required: false
+        default: ""
       archs:
         description: |
           Architectures (comma-separated):
@@ -116,17 +133,31 @@ jobs:
           INPUT_ARCHS: ${{ inputs.archs }}
           INPUT_PACKAGES: ${{ inputs.packages }}
           INPUT_PYTHON_VERSION: ${{ inputs.python_version }}
+          INPUT_CANONICAL_PYTHON: ${{ inputs.canonical_python }}
         run: |
           ARCHS="$INPUT_ARCHS"
           PACKAGES="$INPUT_PACKAGES"
           py="$INPUT_PYTHON_VERSION"
           py_short="$(echo "$py" | cut -d. -f1-2)"   # 3.12 or 3.12.13 -> 3.12
+          canonical="$INPUT_CANONICAL_PYTHON"        # empty => no gating
 
           matrix='{"include":['
           first=true
           for arch in $(echo "$ARCHS" | tr ',' ' '); do
             for pkg in $(echo "$PACKAGES" | tr ',' ' '); do
               pkg_name="${pkg%%:*}"
+
+              # A build.sh recipe builds via SimplePackageBuilder -> py3-none-<plat>
+              # wheel, identical across Python versions. Build it only on the
+              # canonical leg; the others would just emit duplicate filenames that
+              # are dismissed at publish. Gating off when no canonical is provided
+              # (standalone dispatch) keeps the old build-everything behaviour.
+              if [[ -n "$canonical" && "$py_short" != "$canonical" \
+                    && -f "recipes/$pkg_name/build.sh" ]]; then
+                echo "::notice::Skip py${py_short}: ${pkg_name} — py3-none recipe, built only on py${canonical}"
+                continue
+              fi
+
               if [[ "$arch" == "android" ]]; then
                 runner="ubuntu-latest"
                 platform="android"

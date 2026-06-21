@@ -1,0 +1,88 @@
+--- a/setup.py
++++ b/setup.py
+@@ -577,6 +577,21 @@
+     pipcl.py `build_fn()` callback.
+     '''
+     #pipcl.show_sysconfig()
++
++    # mobile-forge: under crossenv the cross-python reports platform.system()==
++    # 'Android', so clang.cindex looks for 'libclang.so' while the macOS libclang
++    # wheel only ships 'libclang.dylib'. MuPDF's wrapper codegen parses headers on
++    # the host, so expose the bundled dylib under the expected name (no-op on Linux).
++    try:
++        import clang.cindex as _mf_cc
++        _mf_nat = os.path.join(os.path.dirname(_mf_cc.__file__), 'native')
++        _mf_dylib = os.path.join(_mf_nat, 'libclang.dylib')
++        _mf_so = os.path.join(_mf_nat, 'libclang.so')
++        if os.path.exists(_mf_dylib) and not os.path.exists(_mf_so):
++            os.symlink('libclang.dylib', _mf_so)
++            log(f'mobile-forge: symlinked {_mf_so} -> libclang.dylib')
++    except Exception as _mf_e:
++        log(f'mobile-forge: libclang crossenv shim skipped: {_mf_e}')
+     
+     if PYMUPDF_SETUP_DUMMY == '1':
+         log(f'{PYMUPDF_SETUP_DUMMY=} Building dummy wheel with no files.')
+@@ -585,6 +600,51 @@
+     # Download MuPDF.
+     #
+     mupdf_local, mupdf_location = get_mupdf()
++
++    # mobile-forge: crossenv reports platform.system()=='Android', matching
++    # neither 'Linux' nor 'Darwin' in MuPDF's build scripts, so several
++    # host/target code paths are skipped. Patch the freshly downloaded MuPDF:
++    #  (1) state.py: treat the Android *target* as Linux for ELF behaviours
++    #      (libmupdfcpp.so soname + unversioned -lmupdfcpp symlink; don't link
++    #      libpython into the modules).
++    #  (2) cpp.py: force the manual size_t / int8_t..uint64_t / FILE / va_list
++    #      typedefs the libclang parse needs on the macOS *host* (no system
++    #      headers), else MuPDF structs parse incompletely.
++    #  (3) __main__.py: the cross build dir is '<arch>-...-shared-...', so
++    #      `startswith('shared-')` is False and libmupdf is dropped from the
++    #      _mupdf.so link -> undefined fz_* symbols. Match 'shared-' anywhere.
++    if mupdf_local and os.path.isdir('/System/Library/Frameworks'):
++        try:
++            _mf_state = os.path.join(mupdf_local, 'scripts', 'wrap', 'state.py')
++            with open(_mf_state) as _mf_f:
++                _mf_s = _mf_f.read()
++            _mf_s = _mf_s.replace(
++                    "self.linux = self.os_name == 'Linux'",
++                    "self.linux = self.os_name in ('Linux', 'Android')", 1)
++            with open(_mf_state, 'w') as _mf_f:
++                _mf_f.write(_mf_s)
++            _mf_cpp = os.path.join(mupdf_local, 'scripts', 'wrap', 'cpp.py')
++            with open(_mf_cpp) as _mf_f:
++                _mf_t = _mf_f.read()
++            _mf_t = _mf_t.replace(
++                    'if state.state_.linux or state.state_.macos:',
++                    'if state.state_.linux or state.state_.macos or 1:', 1)
++            _mf_t = _mf_t.replace(
++                    'if state.state_.macos:',
++                    'if state.state_.macos or 1:', 1)
++            with open(_mf_cpp, 'w') as _mf_f:
++                _mf_f.write(_mf_t)
++            _mf_main = os.path.join(mupdf_local, 'scripts', 'wrap', '__main__.py')
++            with open(_mf_main) as _mf_f:
++                _mf_m = _mf_f.read()
++            _mf_m = _mf_m.replace(
++                    "os.path.basename( build_dirs.dir_so).startswith( 'shared-')",
++                    "('shared-' in os.path.basename( build_dirs.dir_so))", 1)
++            with open(_mf_main, 'w') as _mf_f:
++                _mf_f.write(_mf_m)
++            log('mobile-forge: patched MuPDF state.py + cpp.py + __main__.py for crossenv')
++        except Exception as _mf_e2:
++            log(f'mobile-forge: mupdf crossenv shim skipped: {_mf_e2}')
+     if mupdf_local:
+         mupdf_version_tuple = get_mupdf_version(mupdf_local)
+     # else we cannot determine version this way and do not use it
+@@ -1099,6 +1159,11 @@
+     (compiler_extra, linker_extra, includes, defines, optimise, debug, libpaths, libs, libraries) \
+         = _extension_flags( mupdf_local, mupdf_build_dir, build_type)
+     log(f'_build_extension(): {g_py_limited_api=} {defines=}')
++    # mobile-forge: forge requires Android .so to be 16 KB page-aligned. The
++    # MuPDF libs get -Wl,-z,max-page-size=16384 via forge's LDFLAGS, but
++    # PyMuPDF's pipcl link of _extra.so uses its own flags, so add it here.
++    if os.environ.get('CROSS_VENV_SDK') == 'android':
++        linker_extra += ' -Wl,-z,max-page-size=16384'
+     if mupdf_local:
+         includes = (
+                 f'{mupdf_local}/platform/c++/include',
