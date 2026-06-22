@@ -1,14 +1,15 @@
 --- a/setup.py
 +++ b/setup.py
-@@ -577,6 +577,21 @@
+@@ -577,6 +577,22 @@
      pipcl.py `build_fn()` callback.
      '''
      #pipcl.show_sysconfig()
 +
 +    # mobile-forge: under crossenv the cross-python reports the *target*
 +    # platform ('Android' or 'iOS'), so clang.cindex looks for 'libclang.so'
-+    # while the macOS libclang wheel only ships 'libclang.dylib'. The wrapper
-+    # codegen parses headers on the host, so expose it under the expected name.
++    # while a macOS libclang wheel only ships 'libclang.dylib'. The wrapper
++    # codegen parses headers on the host, so expose it under the expected name
++    # (no-op when the wheel already ships libclang.so, e.g. on a Linux host).
 +    try:
 +        import clang.cindex as _mf_cc
 +        _mf_nat = os.path.join(os.path.dirname(_mf_cc.__file__), 'native')
@@ -22,17 +23,18 @@
      
      if PYMUPDF_SETUP_DUMMY == '1':
          log(f'{PYMUPDF_SETUP_DUMMY=} Building dummy wheel with no files.')
-@@ -585,6 +600,79 @@
+@@ -585,6 +601,79 @@
      # Download MuPDF.
      #
      mupdf_local, mupdf_location = get_mupdf()
 +
 +    # mobile-forge: crossenv reports platform.system()=='Android'/'iOS', which
 +    # MuPDF's build scripts match against neither 'Linux' nor 'Darwin', so many
-+    # host/target code paths are skipped. Patch the (shared, reused across arches)
-+    # downloaded MuPDF. Edits are idempotent (skipped if already applied), since
-+    # the same source tree is reused for every architecture in a build.
-+    if mupdf_local and os.path.isdir('/System/Library/Frameworks'):
++    # host/target code paths are skipped. Gate on CROSS_VENV_SDK (the forge cross
++    # build marker) so this applies on BOTH the macOS (iOS) and Linux (Android CI)
++    # build hosts. Edits are idempotent (the mupdf source tree is reused across
++    # architectures within one build).
++    if mupdf_local and os.environ.get('CROSS_VENV_SDK'):
 +        import re as _mf_re
 +        _w = os.path.join(mupdf_local, 'scripts', 'wrap')
 +        def _mf_edit(p, subs, regex=False):
@@ -59,17 +61,16 @@
 +                     "self.linux = self.os_name in ('Linux', 'Android')"),
 +                    ("self.macos = self.os_name == 'Darwin'",
 +                     "self.macos = self.os_name in ('Darwin', 'iOS')")])
-+            # jlib.py: link_l_flags darwin detection -> include iOS, so the rpath
-+            # is @loader_path (Apple ld64 rejects the Linux '-z,origin').
++            # jlib.py: link_l_flags darwin detection -> include iOS (@loader_path
++            # rpath; Apple ld64 rejects the Linux '-z,origin').
 +            _mf_edit(os.path.join(mupdf_local, 'scripts', 'jlib.py'), [
 +                    ("darwin = (platform.system() == 'Darwin')",
 +                     "darwin = (platform.system() in ('Darwin', 'iOS'))")])
-+            # cpp.py: the libclang wrapper-codegen parse has no system headers on
-+            # the macOS host. Force MuPDF to emit its manual size_t/int/FILE/
-+            # va_list typedefs (names must exist), but define them via clang's
-+            # per-target builtin macros and pass -target <triple> so they resolve
-+            # to the ACTUAL per-arch sizes (size_t=unsigned long 64-bit / unsigned
-+            # int 32-bit). A fixed 'unsigned long' mis-sizes the wrapper on 32-bit.
++            # cpp.py: force MuPDF's manual size_t/int/FILE/va_list typedefs (the
++            # libclang parse has no target system headers), but define them via
++            # clang per-target builtin macros + pass -target <triple> so they
++            # resolve to the REAL per-arch sizes (size_t unsigned long 64-bit /
++            # unsigned int 32-bit). A fixed 'unsigned long' mis-sizes 32-bit.
 +            _mf_edit(os.path.join(_w, 'cpp.py'), [
 +                    ('if state.state_.linux or state.state_.macos:',
 +                     'if state.state_.linux or state.state_.macos or 1:'),
@@ -102,7 +103,7 @@
      if mupdf_local:
          mupdf_version_tuple = get_mupdf_version(mupdf_local)
      # else we cannot determine version this way and do not use it
-@@ -1099,6 +1187,10 @@
+@@ -1099,6 +1188,10 @@
      (compiler_extra, linker_extra, includes, defines, optimise, debug, libpaths, libs, libraries) \
          = _extension_flags( mupdf_local, mupdf_build_dir, build_type)
      log(f'_build_extension(): {g_py_limited_api=} {defines=}')
