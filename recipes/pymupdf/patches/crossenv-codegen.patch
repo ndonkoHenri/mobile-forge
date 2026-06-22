@@ -1,15 +1,23 @@
 --- a/setup.py
 +++ b/setup.py
-@@ -577,6 +577,22 @@
+@@ -561,7 +561,7 @@
+ linux = sys.platform.startswith( 'linux') or 'gnu' in sys.platform
+ openbsd = sys.platform.startswith( 'openbsd')
+ freebsd = sys.platform.startswith( 'freebsd')
+-darwin = sys.platform.startswith( 'darwin')
++darwin = sys.platform.startswith( 'darwin') or sys.platform == 'ios'  # mobile-forge: iOS is Darwin/Mach-O
+ windows = platform.system() == 'Windows' or platform.system().startswith('CYGWIN')
+ msys2 = platform.system().startswith('MSYS_NT-')
+ 
+@@ -577,6 +577,21 @@
      pipcl.py `build_fn()` callback.
      '''
      #pipcl.show_sysconfig()
 +
-+    # mobile-forge: under crossenv the cross-python reports the *target*
-+    # platform ('Android' or 'iOS'), so clang.cindex looks for 'libclang.so'
-+    # while a macOS libclang wheel only ships 'libclang.dylib'. The wrapper
-+    # codegen parses headers on the host, so expose it under the expected name
-+    # (no-op when the wheel already ships libclang.so, e.g. on a Linux host).
++    # mobile-forge: under crossenv the cross-python reports the target platform
++    # ('Android'/'iOS'), so clang.cindex looks for 'libclang.so' while a macOS
++    # libclang wheel only ships 'libclang.dylib'. Codegen parses on the host, so
++    # expose it under the expected name (no-op if the wheel already ships .so).
 +    try:
 +        import clang.cindex as _mf_cc
 +        _mf_nat = os.path.join(os.path.dirname(_mf_cc.__file__), 'native')
@@ -23,17 +31,15 @@
      
      if PYMUPDF_SETUP_DUMMY == '1':
          log(f'{PYMUPDF_SETUP_DUMMY=} Building dummy wheel with no files.')
-@@ -585,6 +601,79 @@
+@@ -585,6 +600,69 @@
      # Download MuPDF.
      #
      mupdf_local, mupdf_location = get_mupdf()
 +
-+    # mobile-forge: crossenv reports platform.system()=='Android'/'iOS', which
-+    # MuPDF's build scripts match against neither 'Linux' nor 'Darwin', so many
-+    # host/target code paths are skipped. Gate on CROSS_VENV_SDK (the forge cross
-+    # build marker) so this applies on BOTH the macOS (iOS) and Linux (Android CI)
-+    # build hosts. Edits are idempotent (the mupdf source tree is reused across
-+    # architectures within one build).
++    # mobile-forge: crossenv reports platform.system()=='Android'/'iOS', matching
++    # neither 'Linux' nor 'Darwin' in MuPDF's scripts. Gate on CROSS_VENV_SDK so
++    # this applies on both the macOS (iOS) and Linux (Android CI) build hosts.
++    # Edits are idempotent (the mupdf source tree is reused across architectures).
 +    if mupdf_local and os.environ.get('CROSS_VENV_SDK'):
 +        import re as _mf_re
 +        _w = os.path.join(mupdf_local, 'scripts', 'wrap')
@@ -42,7 +48,7 @@
 +                _t = _f.read()
 +            for _o, _n in subs:
 +                if _n in _t:
-+                    continue  # idempotent: already patched (shared source)
++                    continue
 +                if regex:
 +                    _t2 = _mf_re.sub(_o, _n, _t)
 +                else:
@@ -53,24 +59,14 @@
 +            with open(p, 'w') as _f:
 +                _f.write(_t)
 +        try:
-+            # state.py: Android target -> Linux (ELF .so soname, unversioned
-+            # -lmupdfcpp symlink, '$ORIGIN' rpath); iOS target -> macOS (Mach-O
-+            # .dylib, @loader_path rpath, macos_patch, -undefined dynamic_lookup).
 +            _mf_edit(os.path.join(_w, 'state.py'), [
 +                    ("self.linux = self.os_name == 'Linux'",
 +                     "self.linux = self.os_name in ('Linux', 'Android')"),
 +                    ("self.macos = self.os_name == 'Darwin'",
 +                     "self.macos = self.os_name in ('Darwin', 'iOS')")])
-+            # jlib.py: link_l_flags darwin detection -> include iOS (@loader_path
-+            # rpath; Apple ld64 rejects the Linux '-z,origin').
 +            _mf_edit(os.path.join(mupdf_local, 'scripts', 'jlib.py'), [
 +                    ("darwin = (platform.system() == 'Darwin')",
 +                     "darwin = (platform.system() in ('Darwin', 'iOS'))")])
-+            # cpp.py: force MuPDF's manual size_t/int/FILE/va_list typedefs (the
-+            # libclang parse has no target system headers), but define them via
-+            # clang per-target builtin macros + pass -target <triple> so they
-+            # resolve to the REAL per-arch sizes (size_t unsigned long 64-bit /
-+            # unsigned int 32-bit). A fixed 'unsigned long' mis-sizes 32-bit.
 +            _mf_edit(os.path.join(_w, 'cpp.py'), [
 +                    ('if state.state_.linux or state.state_.macos:',
 +                     'if state.state_.linux or state.state_.macos or 1:'),
@@ -90,20 +86,22 @@
 +            _mf_edit(os.path.join(_w, 'cpp.py'), [
 +                    ("'-D', 'FZ_FUNCTION=',",
 +                     "'-D', 'FZ_FUNCTION=', *(['-target', os.environ['MOBILE_FORGE_CLANG_TARGET']] if os.environ.get('MOBILE_FORGE_CLANG_TARGET') else []),")])
-+            # __main__.py: cross build dir is '<arch>-...-shared-...', so
-+            # startswith('shared-') is False and libmupdf was dropped from the
-+            # _mupdf.so link -> undefined fz_*. Match 'shared-' anywhere.
 +            _mf_edit(os.path.join(_w, '__main__.py'), [
 +                    ("os.path.basename( build_dirs.dir_so).startswith( 'shared-')",
 +                     "('shared-' in os.path.basename( build_dirs.dir_so))")])
-+            log('mobile-forge: patched MuPDF state.py + jlib.py + cpp.py + __main__.py')
++            import pipcl as _mf_pipcl
++            if not getattr(_mf_pipcl, '_mf_ios_darwin', False):
++                _mf_darwin_orig = _mf_pipcl.darwin
++                _mf_pipcl.darwin = lambda: _mf_darwin_orig() or sys.platform == 'ios'
++                _mf_pipcl._mf_ios_darwin = True
++            log('mobile-forge: patched MuPDF state.py + jlib.py + cpp.py + __main__.py + pipcl.darwin')
 +        except Exception as _mf_e2:
 +            log(f'mobile-forge: mupdf crossenv shim FAILED: {_mf_e2}')
 +            raise
      if mupdf_local:
          mupdf_version_tuple = get_mupdf_version(mupdf_local)
      # else we cannot determine version this way and do not use it
-@@ -1099,6 +1188,10 @@
+@@ -1099,6 +1177,10 @@
      (compiler_extra, linker_extra, includes, defines, optimise, debug, libpaths, libs, libraries) \
          = _extension_flags( mupdf_local, mupdf_build_dir, build_type)
      log(f'_build_extension(): {g_py_limited_api=} {defines=}')
@@ -114,3 +112,21 @@
      if mupdf_local:
          includes = (
                  f'{mupdf_local}/platform/c++/include',
+@@ -1446,7 +1528,7 @@
+             ret.append(libclang)
+         elif openbsd:
+             print(f'OpenBSD: libclang not available via pip; assuming `pkg_add py3-llvm`.')
+-        elif darwin and platform_release_tuple() < (18,):
++        elif darwin and sys.platform != 'ios' and platform_release_tuple() < (18,):
+             # There are still of problems when building on old macos.
+             ret.append('libclang==14.0.6')
+         else:
+@@ -1457,7 +1539,7 @@
+             print(f'OpenBSD: pip install of swig does not build; assuming `pkg_add swig`.')
+         elif PYMUPDF_SETUP_SWIG:
+             pass
+-        elif darwin and python_version_tuple < (3, 13):
++        elif darwin and sys.platform != 'ios' and python_version_tuple < (3, 13):
+             # Latest swig-4.4.1 gives director errors on macos with python<3.13.
+             ret.append('swig==4.3.1')
+         else:
