@@ -31,6 +31,18 @@ requirements:
 build:
   number: 0
   script_env:
+    # The libclang wrapper-codegen parse needs the real per-arch target triple so
+    # MuPDF's manual size_t/int typedefs (rewritten to clang __*_TYPE__ builtins
+    # by the patch) resolve to the actual sizes — size_t is unsigned long on
+    # 64-bit but unsigned int on 32-bit (x86 / armeabi-v7a). Android uses forge's
+    # HOST_TRIPLET (aarch64-linux-android, i686-linux-android, ...); iOS builds
+    # the apple triple from the arch (the simulator/device suffix doesn't affect
+    # type sizes, so a bare <arch>-apple-ios is enough for the parse).
+# {% if sdk == 'android' %}
+    MOBILE_FORGE_CLANG_TARGET: "{HOST_TRIPLET}"
+# {% else %}
+    MOBILE_FORGE_CLANG_TARGET: "{{ arch }}-apple-ios"
+# {% endif %}
     # PyMuPDF's pipcl links _extra.so via base_linker(), which uses $LD when set
     # and otherwise falls back to the host `c++` (Apple ld then rejects the GNU
     # `-z` flags in forge's LDFLAGS). forge exports CC/CXX but not LD, so point
@@ -47,17 +59,29 @@ build:
     # and Makefile knobs here as make *command-line* vars, which override
     # MuPDF Makerules' `CC = xcrun cc` defaults. HAVE_OBJCOPY=no keeps the
     # portable hexdump font codegen (proven in flet-libmupdf); host-lib-dragging
-    # optionals are disabled. OS=Linux avoids the host (Darwin) conventions.
-    # SO_VERSION= builds libmupdf.so UNVERSIONED (soname libmupdf.so, no
-    # libmupdf.so.X.Y): Android resolves DT_NEEDED by name and APK jniLibs only
-    # accept bare lib*.so, so a versioned soname would make on-device dlopen of
-    # libmupdf.so.27.2 fail. Pairs with USE_SONAME=no below (the wrap side).
+    # optionals are disabled. SO_VERSION= builds libmupdf UNVERSIONED (soname
+    # libmupdf.so, no libmupdf.so.X.Y): Android resolves DT_NEEDED by name and
+    # APK jniLibs only accept bare lib*.so, so a versioned soname would make
+    # on-device dlopen of libmupdf.so.27.2 fail. Pairs with USE_SONAME=no.
+    # OS gates the platform conventions: Android => OS=Linux (ELF .so, needs the
+    # NDK liblog for __android_log_print); iOS => OS=Darwin (Mach-O .dylib,
+    # -dead_strip). The host is macOS either way, so we always override the
+    # toolchain off Makerules' xcrun defaults.
+# {% if sdk == 'android' %}
     MUPDF_MAKE: >-
       make OS=Linux CC={CC} CXX={CXX} AR={AR} RANLIB={RANLIB} SO_VERSION=
       HAVE_OBJCOPY=no HAVE_LIBCRYPTO=no HAVE_GLUT=no HAVE_X11=no HAVE_CURL=no
       barcode=no tesseract=no
       XCFLAGS="{CFLAGS} {CPPFLAGS} -fPIC" XCXXFLAGS="-std=c++14"
       XLDFLAGS="{LDFLAGS}" XLIBS="-llog"
+# {% else %}
+    MUPDF_MAKE: >-
+      make OS=Darwin CC={CC} CXX={CXX} AR={AR} RANLIB={RANLIB} SO_VERSION=
+      HAVE_OBJCOPY=no HAVE_LIBCRYPTO=no HAVE_GLUT=no HAVE_X11=no HAVE_CURL=no
+      barcode=no tesseract=no
+      XCFLAGS="{CFLAGS} {CPPFLAGS} -fPIC" XCXXFLAGS="-std=c++14"
+      XLDFLAGS="{LDFLAGS}"
+# {% endif %}
     # Make MuPDF's wrapper build use UNVERSIONED sonames too (get_so_version()
     # returns '' when USE_SONAME=no): libmupdfcpp.so / _mupdf.so reference and
     # are built as bare lib*.so, matching SO_VERSION= above and what ships in
