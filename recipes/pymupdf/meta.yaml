@@ -48,12 +48,21 @@ build:
     # MuPDF Makerules' `CC = xcrun cc` defaults. HAVE_OBJCOPY=no keeps the
     # portable hexdump font codegen (proven in flet-libmupdf); host-lib-dragging
     # optionals are disabled. OS=Linux avoids the host (Darwin) conventions.
+    # SO_VERSION= builds libmupdf.so UNVERSIONED (soname libmupdf.so, no
+    # libmupdf.so.X.Y): Android resolves DT_NEEDED by name and APK jniLibs only
+    # accept bare lib*.so, so a versioned soname would make on-device dlopen of
+    # libmupdf.so.27.2 fail. Pairs with USE_SONAME=no below (the wrap side).
     MUPDF_MAKE: >-
-      make OS=Linux CC={CC} CXX={CXX} AR={AR} RANLIB={RANLIB}
+      make OS=Linux CC={CC} CXX={CXX} AR={AR} RANLIB={RANLIB} SO_VERSION=
       HAVE_OBJCOPY=no HAVE_LIBCRYPTO=no HAVE_GLUT=no HAVE_X11=no HAVE_CURL=no
       barcode=no tesseract=no
       XCFLAGS="{CFLAGS} {CPPFLAGS} -fPIC" XCXXFLAGS="-std=c++14"
       XLDFLAGS="{LDFLAGS}" XLIBS="-llog"
+    # Make MuPDF's wrapper build use UNVERSIONED sonames too (get_so_version()
+    # returns '' when USE_SONAME=no): libmupdfcpp.so / _mupdf.so reference and
+    # are built as bare lib*.so, matching SO_VERSION= above and what ships in
+    # the APK. Without this the _mupdf/_extra DT_NEEDED stay libmupdf.so.27.2.
+    USE_SONAME: "no"
     # Don't build MuPDF with Tesseract OCR (extra heavy thirdparty we don't need).
     PYMUPDF_SETUP_MUPDF_TESSERACT: "0"
     # pipcl (both MuPDF's and PyMuPDF's) shells out to `python3.12-config` to get
