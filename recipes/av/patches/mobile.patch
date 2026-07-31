@@ -1,0 +1,25 @@
+Allow FFMPEG_DIR environment variable to override the FFmpeg discovery path,
+so the forge cross-compilation environment can point at the flet-libffmpeg
+wheel's opt/ prefix without requiring the --ffmpeg-dir= command-line flag.
+
+--- a/setup.py
++++ b/setup.py
+@@ -120,11 +120,12 @@ def parse_cflags(raw_flags):
+     return config, " ".join(shlex.quote(x) for x in unknown)
+ 
+ 
+ # Parse command-line arguments.
+-FFMPEG_DIR = None
+-for i, arg in enumerate(sys.argv):
+-    if arg.startswith("--ffmpeg-dir="):
+-        FFMPEG_DIR = arg.split("=")[1]
+-        del sys.argv[i]
++FFMPEG_DIR = os.environ.get("FFMPEG_DIR") or None
++if FFMPEG_DIR is None:
++    for i, arg in enumerate(sys.argv):
++        if arg.startswith("--ffmpeg-dir="):
++            FFMPEG_DIR = arg.split("=")[1]
++            del sys.argv[i]
+ 
+ # Locate ffmpeg libraries and headers.
+ if FFMPEG_DIR is not None:

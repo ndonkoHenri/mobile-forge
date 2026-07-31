@@ -1,0 +1,19 @@
+{% set version = "8.1.2" %}
+
+# flet-libffmpeg: cross-compiled FFmpeg libraries for iOS and Android.
+#
+# PyAV (av) links against these libraries at build time.
+# On iOS   → static  (.a)  libraries, linked into the Python extension .so
+# On Android → shared (.so) libraries, bundled with the APK
+#
+# FFmpeg 8.x is the major version required by PyAV 18.0.0.
+
+package:
+  name: flet-libffmpeg
+  version: '{{ version }}'
+
+source:
+  url: https://ffmpeg.org/releases/ffmpeg-{{ version }}.tar.gz
+
+build:
+  number: 1
