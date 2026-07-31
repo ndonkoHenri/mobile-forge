@@ -13,7 +13,7 @@ package:
   version: '{{ version }}'
 
 source:
-  url: https://ffmpeg.org/releases/ffmpeg-{{ version }}.tar.gz
+  url: https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n{{ version }}.tar.gz
 
 build:
   number: 1
