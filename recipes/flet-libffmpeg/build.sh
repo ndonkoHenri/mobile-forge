@@ -59,6 +59,12 @@ else
     extra_ldflags="$extra_ldflags -mios-version-min=$SDK_VERSION"
 fi
 
+# x86/x86_64 assembly requires nasm/yasm, which CI runners don't have.
+# ARM architectures don't need an external assembler.
+case "$ff_arch" in
+    x86|x86_64) asm_arg="--disable-asm" ;;
+esac
+
 # ---------------------------------------------------------------------------
 # Configure FFmpeg
 # ---------------------------------------------------------------------------
