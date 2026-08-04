@@ -28,8 +28,12 @@ esac
 # Platform-specific configure args
 # ---------------------------------------------------------------------------
 if [ "$CROSS_VENV_SDK" = "android" ]; then
-    # Android: system=linux, shared libs (bundled in APK)
-    target_os="linux"
+    # Android: use FFmpeg's dedicated "android" target_os, which produces
+    # UNVERSIONED shared libs (libavformat.so, NOT libavformat.so.62).
+    # Versioned sonames break on Android because serious_python's packager
+    # only collects *.so files into jniLibs — libavformat.so.62 would be
+    # left out of the APK, causing "library not found" at runtime.
+    target_os="android"
     sysroot="$NDK_SYSROOT"
     lib_args="--enable-shared --disable-static"
 
