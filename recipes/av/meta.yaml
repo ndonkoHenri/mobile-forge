@@ -17,7 +17,7 @@ package:
   version: '{{ version }}'
 
 build:
-  number: 2
+  number: 3
   script_env:
     # Teach setup.py to find FFmpeg via the flet-libffmpeg wheel's opt/
     # prefix (mobile.patch adds an os.environ.get("FFMPEG_DIR") check

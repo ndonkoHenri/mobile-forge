@@ -2,10 +2,33 @@ Allow FFMPEG_DIR environment variable to override the FFmpeg discovery path,
 so the forge cross-compilation environment can point at the flet-libffmpeg
 wheel's opt/ prefix without requiring the --ffmpeg-dir= command-line flag.
 
+Also add iOS system libraries (zlib, bzip2, iconv) when linking against
+FFmpeg static libraries, since the .a archives reference their symbols but
+get_config_from_directory() only passes the FFmpeg library names.
+
 --- a/setup.py
 +++ b/setup.py
-@@ -120,11 +120,12 @@ def parse_cflags(raw_flags):
-     return config, " ".join(shlex.quote(x) for x in unknown)
+@@ -68,9 +68,18 @@
+     if not os.path.exists(library_dir):
+         library_dir = FFMPEG_DIR
+ 
++    libraries = list(FFMPEG_LIBRARIES)
++
++    # When linking against FFmpeg static libraries (.a), the transitive
++    # system dependencies (zlib, bzip2, iconv) must be resolved explicitly.
++    # On iOS, flet-libffmpeg always builds static libs, so add them here.
++    sdk = os.environ.get("CROSS_VENV_SDK", "")
++    if sdk.startswith("iphone") or sdk.startswith("ios"):
++        libraries.extend(["z", "bz2", "iconv"])
++
+     return {
+         "include_dirs": [include_dir],
+-        "libraries": FFMPEG_LIBRARIES,
++        "libraries": libraries,
+         "library_dirs": [library_dir],
+     }
+ 
+@@ -121,11 +130,12 @@
  
  
  # Parse command-line arguments.
