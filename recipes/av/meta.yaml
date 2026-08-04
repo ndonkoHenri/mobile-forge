@@ -1,0 +1,35 @@
+{% set version = "18.0.0" %}
+{% set ffmpeg_version = "8.1.2" %}
+
+# PyAV — Pythonic bindings for FFmpeg's libraries.
+#
+# Shape: C-ext consuming flet-libffmpeg (native C library).
+# PyAV uses Cython to build ~150 extension modules that link against
+# libavformat, libavcodec, libavutil, libavfilter, libavdevice,
+# libswscale, and libswresample.
+#
+# On iOS the FFmpeg libraries are statically linked into each extension;
+# on Android they're shared .so files bundled alongside via Requires-Dist
+# promotion of the flet-libffmpeg wheel.
+
+package:
+  name: av
+  version: '{{ version }}'
+
+build:
+  number: 3
+  script_env:
+    # Teach setup.py to find FFmpeg via the flet-libffmpeg wheel's opt/
+    # prefix (mobile.patch adds an os.environ.get("FFMPEG_DIR") check
+    # before the pkg-config fallback).
+    FFMPEG_DIR: '{platlib}/opt'
+
+patches:
+  - mobile.patch
+
+requirements:
+  host:
+    # flet-libffmpeg provides the cross-compiled FFmpeg headers + libraries.
+    # forge promotes this to Requires-Dist for flet- prefixed packages so
+    # the Android .so files are bundled at runtime.
+    - flet-libffmpeg {{ ffmpeg_version }}
