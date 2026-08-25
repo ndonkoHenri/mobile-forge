@@ -1,0 +1,6 @@
+# Per-example CI overrides for run-examples.yml, keyed "<recipe>/<example>".
+#   skip = "<reason>"       — exclude from CI runs (reason surfaces in the detect summary)
+#   settle_seconds = <int>  — cap the post-READY screenshot-settle wait (default 60)
+
+["tiktoken/token-budget"]
+skip = "expects a pre-fetched vocab asset under src/ (see the example README); not committed"

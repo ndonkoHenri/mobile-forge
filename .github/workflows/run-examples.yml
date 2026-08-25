@@ -1,0 +1,280 @@
+name: Run examples
+
+# Runs recipe example apps on real emulators/simulators against the PUBLISHED
+# wheels their pyprojects pin — no forge build, no python matrix. Each example
+# is built with an instrumented entrypoint (tests/example-runner/), launched,
+# screenshotted, and judged: READY sentinel + alive + non-blank screen = PASS.
+# Screenshots land in a per-run gallery artifact; the built .apk/.app bundles
+# are artifacts too, ready for a local `adb install` / `simctl install`.
+
+on:
+  push:
+    paths:
+      - "recipes/*/examples/**"
+      - "tests/example-runner/**"
+      - ".ci/build_examples.sh"
+      - ".ci/run_examples_*.sh"
+      - ".ci/report_examples.sh"
+      - ".ci/examples_common.sh"
+      - ".ci/check_screenshot.py"
+      - ".ci/example_override.py"
+      - ".ci/detect_examples.py"
+      - ".ci/make_gallery.py"
+      - ".github/workflows/run-examples.yml"
+  workflow_dispatch:
+    inputs:
+      examples:
+        description: |
+          Examples (comma-separated "<recipe>/<example>" or "<recipe>"), or 'ALL':
+        required: false
+        default: "numpy/bell-curve"
+      platforms:
+        description: |
+          Platforms (comma-separated):
+        required: false
+        default: "android,ios"
+      shards:
+        description: |
+          Shard count per platform (empty = auto from a per-example time budget):
+        required: false
+        default: ""
+
+# Pushes on a branch supersede each other; a dispatched sweep gets its own
+# group (keyed by run_id) so a trivial example push can't cancel hours of
+# macOS-runner work.
+concurrency:
+  group: run-examples-${{ github.ref_name }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'push' }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_NDK_VERSION: "28.2.13676358"  # used by flutter for the apk build
+  FLET_CLI_NO_RICH_OUTPUT: 1
+  # Pinned to the flet the examples themselves pin: an unpinned flet-cli could
+  # change the default bundled Python or the Flutter template and flip every
+  # example red with no change in this repo.
+  FLET_CLI_VERSION: "0.86.5"
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      android_matrix: ${{ steps.detect.outputs.android_matrix }}
+      android_has_jobs: ${{ steps.detect.outputs.android_has_jobs }}
+      ios_matrix: ${{ steps.detect.outputs.ios_matrix }}
+      ios_has_jobs: ${{ steps.detect.outputs.ios_has_jobs }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: Get changed examples
+        id: changed
+        if: github.event_name == 'push'
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
+        with:
+          files: recipes/*/examples/**
+          dir_names: true
+          dir_names_max_depth: 4
+
+      - name: Select and shard examples
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_EXAMPLES: ${{ inputs.examples }}
+          INPUT_PLATFORMS: ${{ inputs.platforms }}
+          INPUT_SHARDS: ${{ inputs.shards }}
+          CHANGED_DIRS: ${{ steps.changed.outputs.all_changed_files }}
+        run: uv run --script .ci/detect_examples.py
+
+  android:
+    needs: detect
+    if: ${{ needs.detect.outputs.android_has_jobs == 'true' }}
+    name: android shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect.outputs.android_matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false      # KEEP — android sdk + python tooling
+          android: false         # KEEP — the SDK builds the APKs
+          dotnet: true
+          haskell: true
+          large-packages: false  # SKIP — sudo apt remove takes minutes
+          docker-images: true
+          swap-storage: true
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install NDK ${{ env.FLUTTER_NDK_VERSION }} for Flutter
+        shell: bash
+        run: .ci/install_ndk.sh "$FLUTTER_NDK_VERSION"
+
+      - name: Build example APKs
+        id: build
+        shell: bash
+        env:
+          EXAMPLES: ${{ matrix.examples }}
+          PLATFORM: android
+        run: .ci/build_examples.sh
+
+      - name: Upload APKs
+        # hashFiles, not the build step's output: has_bundles is written last,
+        # so a build step that dies mid-loop would otherwise discard the
+        # bundles it DID produce — the exact triage artifact a red shard needs.
+        if: ${{ always() && hashFiles('example-out/bundles/*') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: example-apks-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: example-out/bundles/*.apk
+          retention-days: 14
+
+      - name: Run on Android emulator (API 28, x86_64)
+        if: ${{ steps.build.outputs.has_bundles == 'true' }}
+        uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
+        with:
+          # API 28 minimum — Flet's app shell needs it (see build-wheels-version.yml).
+          api-level: 28
+          arch: x86_64
+          target: default
+          disable-animations: true
+          script: .ci/run_examples_android.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: example-results-android-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            example-out/results
+            example-out/shots
+            example-out/logs
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Report results
+        if: always()
+        shell: bash
+        env:
+          EXAMPLES: ${{ matrix.examples }}
+          PLATFORM: android
+          SHARD: ${{ matrix.shard }}
+        run: .ci/report_examples.sh
+
+  ios:
+    needs: detect
+    if: ${{ needs.detect.outputs.ios_has_jobs == 'true' }}
+    name: ios shard ${{ matrix.shard }}
+    runs-on: macos-26
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      # The ~5 public-repo macOS slots are shared with build-wheels' iOS legs;
+      # a full sweep must not starve them.
+      max-parallel: 2
+      matrix: ${{ fromJson(needs.detect.outputs.ios_matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: Build example apps
+        id: build
+        shell: bash
+        env:
+          EXAMPLES: ${{ matrix.examples }}
+          PLATFORM: ios
+        run: .ci/build_examples.sh
+
+      - name: Upload apps
+        if: ${{ always() && hashFiles('example-out/bundles/*') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: example-apps-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: example-out/bundles/*.app.tgz
+          retention-days: 14
+
+      - name: Run on iOS Simulator
+        if: ${{ steps.build.outputs.has_bundles == 'true' }}
+        shell: bash
+        run: .ci/run_examples_ios.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: example-results-ios-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            example-out/results
+            example-out/shots
+            example-out/logs
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Report results
+        if: always()
+        shell: bash
+        env:
+          EXAMPLES: ${{ matrix.examples }}
+          PLATFORM: ios
+          SHARD: ${{ matrix.shard }}
+        run: .ci/report_examples.sh
+
+  gallery:
+    needs: [detect, android, ios]
+    if: ${{ always() && (needs.detect.outputs.android_has_jobs == 'true' || needs.detect.outputs.ios_has_jobs == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: Download shard results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: example-results-*
+          path: artifacts
+
+      - name: Build gallery
+        shell: bash
+        run: |
+          uv run --script .ci/make_gallery.py artifacts gallery.html >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload gallery
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: example-gallery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: gallery.html
+          retention-days: 90

@@ -15,3 +15,5 @@ build/
 local/
 published/
 tools/
+.ruff_cache/
+example-out/
