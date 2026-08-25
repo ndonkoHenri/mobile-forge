@@ -305,3 +305,45 @@ blocks another's publish.
   (`opencv_python-…`, `scikit_learn-…`, `flet_libjq-…`; the project *URL* keeps the hyphen).
   Allow a few minutes for Gemfury indexing after a Publish step reports `[success]`. Account
   for single-platform recipes (`platforms: [ios]`, e.g. pyobjus → no android wheels expected).
+
+## run-examples.yml — example apps on CI devices
+
+Sibling workflow to build-wheels: runs `recipes/*/examples/*` apps on an
+Android emulator / iOS simulator against the **published** wheels their
+pyprojects pin — no forge build, no python matrix, so a run is just
+`flet build` + device. Harness mechanics (sentinel, verdict ladder,
+screenshot checks) live in `tests/example-runner/README.md`; this section is
+the operational side.
+
+- **Triggers.** Push runs only the examples whose dirs changed (smoke set
+  `numpy/bell-curve` when only harness files changed). Dispatch:
+  `gh workflow run run-examples.yml -R <fork> --ref <branch> -f
+  examples="astropy/offline-almanac,apsw/notes" -f platforms=android`
+  (`examples` also takes a bare recipe name or `ALL`; `shards` empty =
+  auto-budgeted). Recipe `platforms:` gates and `overrides.toml` skips are
+  applied in detect.
+- **Reading a run.** Per-shard step summary = verdict table; the
+  `example-gallery-*` artifact is ONE self-contained HTML page with every
+  screenshot, failures first — start there. `example-results-*` holds raw
+  screenshots + console logs + verdict tsvs; `example-apks-*` /
+  `example-apps-*` hold installable bundles (`adb install x.apk`; `tar -xzf
+  x.app.tgz && xcrun simctl install booted *.app`, launch
+  `com.flet.example_runner`).
+- **Verdict semantics.** `RESOLVE_FAIL` = pip couldn't resolve the pins for
+  the mobile target under flet's default python — usually "recipe needs a
+  republish for newer pythons", genuine signal. `INFRA` / `NO_RESULT` =
+  environment died, rerun the job. Anything else red = the example itself.
+- **Cost datum (2026-08-25).** Warm android shard: 4 examples ≈ 18 min
+  (~4.6 min each); budget constants in `detect_examples.py` assume 8
+  (android) / 11 (ios) min ×1.5 — conservative on purpose (matplotlib-class
+  builds are slower than the median).
+- **New-workflow registration footgun.** A branch whose FIRST push of a new
+  workflow file carries `[skip ci]` never registers the workflow →
+  `gh workflow run` 404s ("not found on the default branch"). Push a
+  paths-matching commit **without** `[skip ci]` once; after that, dispatch
+  works against the branch ref.
+- **Concurrency.** Pushes on a branch supersede each other's runs; a
+  dispatched sweep is keyed by run_id and can't be cancelled by pushes. A
+  full `ALL` sweep is ~6 android shards + 7 iOS shards (max-parallel 2 —
+  the macOS slots are shared with build-wheels' iOS legs; time big sweeps
+  accordingly).
