@@ -11,13 +11,10 @@ as a tiled DEFLATE GeoTIFF, and read back several ways. It ships no data file an
 no network — everything is generated at runtime. `src/elevation.py` holds every rasterio and
 numpy call; `src/main.py` is Flet and the threading around them.
 
-**On an iPhone or iPhone simulator this app fails, and that is the point of running it
-there.** It is the measurement the [recipe page](../..) cites for treating rasterio as
-Android-only: run on
-2026-08-19, it wrote and read the raster on an arm64 Android emulator with 0 of 1,048,576
-pixels differing, and on an iPhone simulator the write raised
-`DriverRegistrationError: ('No such driver registered: %s', b'GTiff')` in a process that had
-just listed `GTiff` among its drivers. Build it for iOS to see that, not to use it.
+It runs on both platforms: an arm64 Android emulator and an iPhone simulator each wrote and
+read the raster back with 0 of 1,048,576 pixels differing. Watch the size, though — an iOS
+slice of rasterio is 92–101 MB compressed, because on that platform every extension links its
+own static GDAL. The [recipe page](../..) has the breakdown.
 
 What it demonstrates:
 

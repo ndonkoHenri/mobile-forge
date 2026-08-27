@@ -350,11 +350,14 @@ The version pin in `meta.yaml` is exact for a reason — the bindings hard-requi
 major.minor match with libgdal. Bump the two together and re-read the consumer claims off the
 built wheels.
 
-**The single-table property is the whole iOS argument, and upstream can retire it silently.**
-`PyInit__gdal` calling `GDALAllRegister`, and `osgeo/gdal.py` containing no reference to
-`_ogr`, `_osr`, `_gnm`, `_gdal_array` or `_gdalconst`, are what keep the raster path inside
-one image. Upstream moving one function to a different SWIG module would break iOS the way
-`rasterio` and `pyogrio` are broken, with no build error.
+**The single-table property is why this package needs no iOS patch, and upstream can retire
+it silently.** `PyInit__gdal` calling `GDALAllRegister`, and `osgeo/gdal.py` containing no
+reference to `_ogr`, `_osr`, `_gnm`, `_gdal_array` or `_gdalconst`, are what keep the raster
+path inside one image. Upstream moving one function to a different SWIG module would split
+the driver registry the way it is split in `rasterio`, `pyogrio` and `fiona` — each of which
+carries an `ios-driver-registry.patch` to call `GDALAllRegister()` in every module that
+resolves a driver name — and it would do it with no build error. Those patches are the
+template if it happens here.
 
 The import graph moves on any bindings release too: four-modules-on-import and
 six-after-`UseExceptions()` are upstream source behaviour, not ours.
