@@ -33,4 +33,27 @@ requirements:
 # {% endif %}
 
 about:
-  license: MIT
+  # The iOS build is SHARED, and a shared library CONTAINS what it links: this
+  # dylib absorbs libtiff, libjpeg-turbo, libcurl, libpsl and OpenSSL, none of
+  # which PROJ's own COPYING covers. Same reasoning as flet-libjq bundling
+  # oniguruma's notice and flet-libpsl bundling the Chromium DAFSA one.
+  #
+  # The obligation did not appear with the shared build -- under the static one
+  # the same object code was pulled into each CONSUMER's extension instead, so
+  # it shipped inside pyproj's wheel, which as a Python-package recipe has no
+  # mechanism to add licence files. Moving it here is what makes it declarable.
+  #
+  # Android links these as real shared libraries, so nothing is absorbed there
+  # and only MIT would apply; the wheel carries one licence set for both rather
+  # than diverging, which over-states Android's obligations and never
+  # under-states iOS's. MPL-2.0 is the one with teeth -- libpsl compiles in the
+  # Public Suffix List data.
+  license_file:
+    - COPYING
+    - licenses/LICENSE.libtiff.md
+    - licenses/LICENSE.libjpeg-turbo.md
+    - licenses/COPYING.curl
+    - licenses/COPYING.libpsl
+    - licenses/LICENSE.chromium
+    - licenses/LICENSE.openssl
+  license: MIT AND libtiff AND BSD-4.3TAHOE AND IJG AND BSD-3-Clause AND Zlib AND curl AND MPL-2.0 AND Apache-2.0

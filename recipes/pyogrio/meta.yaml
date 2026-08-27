@@ -7,16 +7,11 @@ requirements:
     - flet-libgdal 3.13.1
 
 build:
-  # 3 moves iOS onto the SHARED libgdal that flet-libgdal ships from its build 3.
-  # One image means one driver registry, so ios-driver-registry.patch is gone;
-  # what replaces it is a preload shim, because the extensions link the dylib
-  # through @rpath and nothing on their rpath resolves it once flet has
-  # relocated them into frameworks.
-  # 4 rebuilds against flet-libgdal build 4, whose libgdal.dylib links the
-  # shared libproj instead of absorbing it -- so this package, the other GDAL
-  # consumers and pyproj all resolve one PROJ. The preload shim loads libproj
-  # before libgdal, in dependency order.
-  number: 4
+  # 2 moves iOS onto the shared libgdal/libproj pair. One image means one driver
+  # registry, so ios-driver-registry.patch is gone; a preload shim replaces it,
+  # because the extensions link the dylibs through @rpath and nothing on their
+  # rpath resolves those once flet has relocated them.
+  number: 2
   script_env:
     GDAL_VERSION: 3.13.1
     # pyogrio reads GDAL_LIBRARY_PATH (one directory). fiona and rasterio read

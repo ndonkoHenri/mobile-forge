@@ -1,6 +1,6 @@
 Preload libproj + libgdal before the extensions that link them, so iOS resolves them.
 
-flet-libgdal ships a shared libgdal.dylib for iOS, and from its build 4 that
+flet-libgdal ships a shared libgdal.dylib for iOS, and from its build 3 that
 dylib links the shared libproj.dylib rather than absorbing PROJ -- so gdal,
 fiona, rasterio, pyogrio and pyproj all resolve ONE GDAL and ONE PROJ. That is
 what gives the app a single driver registry and a single PROJ database search

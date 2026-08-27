@@ -13,29 +13,12 @@ requirements:
 # {% endif %}
 
 build:
-  # Same source version as pypi.flet.dev's rasterio-1.5.0-10 wheel, but
-  # this rebuild links against flet-libgdal 3.13.1 (vs. the published
-  # wheel's 3.10.0). pip's wheel selection picks the higher build_tag
-  # per PEP 427 when name+version collide; the new wheel must outrank
-  # build 10 or downstream installs would silently keep the old
-  # libgdal-3.10-linked rasterio and the gdal chain bump would be invisible.
-  # 12 adds ios-driver-registry.patch: with a static libgdal each extension
-  # gets its own driver registry, so rasterio.open failed on iOS with
-  # "No such driver registered: GTiff" while the driver listing succeeded.
-  # 13 extends that patch to rasterio.shutil, the third module that resolves
-  # driver names itself. It fails quietly rather than loudly: shutil.exists()
-  # opens a dataset to identify it, and an empty registry makes that return
-  # False for a file that is there.
-  # 14 moves iOS onto the SHARED libgdal from flet-libgdal build 3. One image
-  # means one driver registry, so ios-driver-registry.patch is gone -- including
-  # the rasterio.shutil hunk build 13 added. A preload shim replaces it, because
-  # the extensions link the dylib through @rpath and nothing on their rpath
-  # resolves it after flet relocates them.
-  # 15 rebuilds against flet-libgdal build 4, whose libgdal.dylib links the
-  # shared libproj instead of absorbing it -- so this package, the other GDAL
-  # consumers and pyproj all resolve one PROJ. The preload shim loads libproj
-  # before libgdal, in dependency order.
-  number: 15
+  # 12 moves iOS onto the shared libgdal/libproj pair. One image means one
+  # driver registry, so ios-driver-registry.patch is gone -- including its
+  # rasterio.shutil hunk. A preload shim replaces it, because the extensions
+  # link the dylibs through @rpath and nothing on their rpath resolves those
+  # once flet has relocated them.
+  number: 12
   script_env:
     GDAL_VERSION: 3.13.1
     # rasterio reads GDAL_LIB_PATH (a colon-separated list); pyogrio's is spelled

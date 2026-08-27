@@ -8,12 +8,10 @@ source:
   url: https://github.com/OSGeo/gdal/releases/download/v{{ version }}/gdal-{{ version }}.tar.gz
 
 build:
-  # 3 builds iOS SHARED (see build.sh). A static libgdal is copied into every
-  # extension that links it, so each gets its own driver registry -- the bug
-  # rasterio, pyogrio and fiona each carry ios-driver-registry.patch for.
-  # 4 links the now-shared libproj instead of absorbing libproj.a, so GDAL and
-  # pyproj resolve one PROJ.
-  number: 4
+  # 3 builds iOS SHARED and links the shared libproj. A static libgdal is copied
+  # into every extension that links it, so each would get its own driver
+  # registry -- the module that registers is not the module that looks up.
+  number: 3
 
 requirements:
   build:
