@@ -57,18 +57,21 @@ run_example_ladder() {  # <slug> <bundle>
     # An install over surviving app data (a silently-failed uninstall) could
     # replay the previous example's sidecar; clear it before the app starts.
     dev_clear_verdict
+
+    # Baseline = the PRE-launch frame (launcher/springboard). Captured before
+    # launch so no speed race exists: a cold sim's first screenshot can take
+    # seconds, long enough for a fast example to be fully rendered (bit
+    # aiohttp on iOS — final frame equalled a post-launch "baseline" and a
+    # healthy app read as STUCK). The settled capture must DIFFER from this
+    # frame; a run stuck on flet's solid boot overlay is caught by the blank
+    # check instead (READY implies Flutter's first frame already rendered).
+    dev_screenshot "$base"
+
     if ! dev_launch; then
         record_verdict "$slug" "$PLATFORM" INSTALL_FAIL "launch failed"
         dev_uninstall
         return 0
     fi
-
-    # Boot-screen baseline: flet's boot overlay is a STATIC solid frame, so
-    # "the screen stopped changing" alone cannot distinguish a rendered app
-    # from a stuck boot — the settled capture must also DIFFER from this.
-    # Captured immediately (Python boot takes seconds) so a fast-rendering
-    # example can't already be on its final frame here.
-    dev_screenshot "$base"
 
     deadline=$(( $(date +%s) + ${READY_TIMEOUT:-300} ))
     tick=0
@@ -108,8 +111,9 @@ run_example_ladder() {  # <slug> <bundle>
         # Wait for the screen to settle: examples do real work in background
         # threads after first paint. "Settled" = consecutive captures differ in
         # <0.5% of pixels (byte-equality would never converge — most examples
-        # show a ProgressRing at some point) AND the frame moved off the boot
-        # baseline. Hitting the cap keeps the last capture but is reported.
+        # show a ProgressRing at some point) AND the frame moved off the
+        # pre-launch baseline. Hitting the cap keeps the last capture but is
+        # reported.
         settle="$(uv run --script "$CI_DIR/example_override.py" "$slug" settle_seconds 60 2>/dev/null || true)"
         case "$settle" in (*[!0-9]*|"") settle=60 ;; esac
         settled=""
@@ -185,10 +189,9 @@ run_example_ladder() {  # <slug> <bundle>
 
         # A dead or backgrounded app leaves the launcher on screen — visually
         # rich and stable, so it must be caught before any pixel check; only a
-        # live foreground app whose frame still equals the boot baseline is
-        # genuinely STUCK (a wedged renderer, or a splash whose logo would
-        # beat the blank check — READY is a Python-side event, frames render
-        # asynchronously).
+        # live foreground app whose frame still equals the PRE-LAUNCH baseline
+        # is genuinely STUCK (its UI never fronted at all — READY is a
+        # Python-side event, frames render asynchronously).
         dev_pull_log "$clog"
         r_final="$(_diff_ratio "$base" "$shot")"
         if ! dev_alive; then
@@ -196,7 +199,7 @@ run_example_ladder() {  # <slug> <bundle>
         elif ! dev_foreground; then
             verdict=BACKGROUNDED; detail="app not in the foreground at capture time"
         elif awk "BEGIN{exit !($r_final < 0.02)}"; then
-            verdict=STUCK; detail="screen never changed from the boot frame after UI READY"
+            verdict=STUCK; detail="screen never changed from the pre-launch frame — app UI never fronted"
         elif [ "${EXAMPLE_CHECKS:-gate}" = "gate" ] \
              && { [ "$checks_state" = ERROR_TEXT ] || [ "$checks_state" = EXPECT_FAIL ]; }; then
             verdict=$checks_state; detail="$checks_detail"
