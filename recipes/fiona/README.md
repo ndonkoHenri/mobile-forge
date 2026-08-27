@@ -16,10 +16,10 @@ one rule to carry into every call is that a CRS has to be spelled as a proj-stri
 than `EPSG:4326`, because resolving an authority code is a database lookup and no database
 ships.
 
-What differs by platform is cost. iOS has no shared GDAL, so five of fiona's eight
-extensions link their own static copy at ~25 MB each: a slice is 46–50 MB compressed and
-128–137 MB unpacked, against 0.84–0.96 MB and 1.8–2.6 MB for an Android wheel. **App size**
-puts that beside Android's shared native chain, which is the comparison that decides it.
+Both platforms resolve one shared GDAL, so the wheels are small and near-identical: an iOS
+slice is 1.0 MB compressed and 3.1–3.2 MB unpacked, against 0.84–0.96 MB and 1.8–2.6 MB for
+an Android wheel. The GDAL itself is a separate package — `flet-libgdal` — and **App size**
+puts the two together, which is the comparison that decides it.
 
 ## Install
 
@@ -201,12 +201,12 @@ with an explicit
 ### App size
 
 Android: 0.84–0.96 MB of compressed wheel and 1.8–2.6 MB unpacked per ABI, on top of roughly
-21–23 MB of shared native libraries per ABI that come with GDAL. iOS: 45.6–50.2 MB
-compressed and 128–137 MB unpacked **per slice**, because there is no shared library there —
-five of fiona's eight extensions each carry a complete copy of GDAL, at about 25 MB apiece.
-Plain `import fiona` maps seven of the eight, about 2 MB of native code on Android arm64-v8a
-against about 102 MB on the iOS device slice: **50× the bytes for the same function**, before
-you touch a file.
+21–23 MB of shared native libraries per ABI that come with GDAL. iOS: 1.0 MB compressed and
+3.1–3.2 MB unpacked per slice, on top of `flet-libgdal`'s own 9.6–10.4 MB compressed
+(27.6–29.3 MB unpacked), which is one shared `libgdal.dylib` for every consumer in the app.
+Plain `import fiona` maps seven of the eight, and the two platforms are now within a factor
+of two of each other for the same work — about 2 MB of native code on Android arm64-v8a
+against about 2.9 MB on the iOS device slice, plus the one shared `libgdal` each.
 
 There is nothing here worth naming to
 [`[tool.flet.cleanup]`](https://flet.dev/docs/publish/#compilation-and-cleanup) — the payload
@@ -237,25 +237,16 @@ expected here and stops nothing.
 
 ### iOS
 
-**Every extension carries its own GDAL, so configuration does not cross between them.**
-There is no shared GDAL on iOS, so the link pulls a full copy — global driver table included
-— into five of fiona's eight extensions, and every image is two-level namespaced, so none of
-them can see another's copy. `fiona._env` defines and calls all eleven registration entry
-points; `ogrext`, where `fiona.open` resolves a driver name, is a different table.
-`ios-driver-registry.patch` is what populates it, and `_geometry` and `_transform` with it,
-so reads and writes work — a GeoJSON round trip runs on an iPhone simulator.
+All eight extensions link one `libgdal.dylib`, the same way Android's link one `libgdal.so`,
+so there is a single driver registry and a single configuration:
+[`fiona.Env()`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.Env) options reach
+the code doing the I/O, and nothing on this page needs a platform caveat.
 
-What the patch does not do is merge the copies. An explicit
-[`fiona.Env()`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.Env) registers into
-`_env`'s GDAL, while the I/O happens in `ogrext`'s, so treat `Env` on iOS as describing the
-registry it queries rather than the dataset you are about to open, and pass options through
-`fiona.open(...)`, which reaches the instance doing the work. Android has one shared
-`libgdal.so` and none of this applies.
-
-`fiona.transform` is the line to think twice about: it is the one extension `import fiona`
-does not already load, and reaching it maps another complete GDAL — about 25 MB of resident
-image for a coordinate conversion. If an app transforms points more than incidentally,
-[`pyproj`](../pyproj) does the same job against PROJ alone.
+The delivery is the only iOS-specific part, and it is invisible from Python. flet relocates
+each extension into its own `*.framework` bundle while the dylib stays a plain file in
+`opt/lib`, so `fiona/__init__.py` loads it `RTLD_GLOBAL` before the first extension import —
+without that, the import fails with `Library not loaded: @rpath/libgdal.dylib`. The shim is
+inert on Android and on a desktop.
 
 ### Other considerations
 
@@ -361,22 +352,18 @@ lands in `Requires-Dist` on both platforms. That is load-bearing on Android, whe
 extensions resolve `libgdal.so` by bare soname at load, and redundant but harmless on iOS,
 where the wheel's payload is a static archive plus headers that Flet's cleanup deletes.
 
-**The iOS driver split is a linking artefact, and `ios-driver-registry.patch` only works
-around it.** `GDAL_LIBS` names the whole static chain because `libgdal.a` leaks undefined
-symbols, and that is what drags a full GDAL — global driver table included — into five of
-the eight extensions. The patch calls `GDALAllRegister()` in each extension that resolves a
-driver name, which makes the package work; it cannot merge the copies, so per-extension
-configuration stays as **iOS** describes it.
+**`flet-libgdal` must stay SHARED on iOS, and `GDAL_LIBS` must stay `gdal`.** A static
+`libgdal.a` is copied into every extension that links it, giving each its own GDAL — its own
+driver registry and its own configuration. fiona registers in `_env` and resolves driver
+names in `ogrext`, so those would stop being the same table: `Env().drivers()` lists a full
+registry while every `fiona.open` fails. The shared library is what makes them one table, and
+it is also why `GDAL_LIBS` is a single entry — the dylib resolves proj, tiff, jpeg, curl,
+ssl, crypto and psl internally, so naming that chain here would link it again per extension.
 
-Building `flet-libgdal` as a shared library for iOS is the real fix: it would retire the
-patch here and the identical ones in [`rasterio`](../rasterio) and [`pyogrio`](../pyogrio),
-close the configuration split, and cut a slice from ~128 MB unpacked to something near
-Android's. It is not new ground for this index — `flet-libzbar` and `flet-libmagic` already
-publish iOS wheels containing `Mach-O 64-bit dynamically linked shared library`, and
-`flet-libarrow` ships `@rpath` dylibs that pyarrow links against. The precedent that matches
-is that last one, a library *linked* by a C extension rather than loaded by ctypes, and it
-needed serious_python #223 to reconcile framework install names. Highest-value fix available
-to this recipe, and to the other two.
+`-undefined dynamic_lookup` must stay off for the same reason: with a real dylib an
+unresolved symbol is a defect that has to fail at link, not at `dlopen` on a device.
+[`rasterio`](../rasterio), [`pyogrio`](../pyogrio) and [`gdal`](../gdal) share all of this;
+change one and re-check the other three.
 
 ### Upgrade hazards
 
@@ -417,8 +404,9 @@ to this recipe, and to the other two.
   `__file__`, `importlib.resources`, `pkgutil`, `pkg_resources`, `ctypes`, `find_library`
   and `inspect.getsource`; today the hits are Windows guards in `_path.py`, `vfs.py` and
   `__init__.py` plus a `platform.system()` in `_show_versions.py`'s printout, all inert.
-- **The sizes are measured.** Re-measure rather than adjusting by eye; the 50× import
-  footprint is the whole argument for budgeting 126–135 MB of extension on iOS.
+- **The sizes are measured.** Re-measure rather than adjusting by eye. They are also the
+  cheapest regression signal there is: an iOS slice that comes back tens of MB means
+  `flet-libgdal` went back to a static archive and every extension absorbed its own copy.
 
 ### Coverage gaps
 
