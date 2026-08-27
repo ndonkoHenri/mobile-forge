@@ -1,0 +1,75 @@
+Preload libproj.dylib before the extensions that link it, so iOS can resolve it.
+
+flet-libproj ships a shared libproj.dylib for iOS as of build 11. That is what
+lets pyproj's eight PROJ-using extensions share one image -- and share it with
+libgdal too, so a PROJ database configured once is configured for gdal, fiona,
+rasterio, pyogrio and pyproj alike, rather than for one of nine private copies.
+
+Delivery is the remaining problem: serious_python relocates each extension
+module into its own *.framework bundle, while libproj.dylib stays a plain file
+in site-packages/opt/lib, and nothing on the relocated extensions' rpath points
+at it. dyld then fails the @rpath lookup at first import:
+
+    ImportError: dlopen(...): Library not loaded: @rpath/libproj.dylib
+
+Loading the dylib RTLD_GLOBAL before any extension is imported sidesteps the
+search: dyld binds each @rpath reference by matching an already-loaded image's
+install-id. The "<name>.fwork" fallback covers a serious_python that does
+relocate it, and every failure is swallowed, because on Android and on desktop
+this block must be inert rather than fatal.
+
+Proven shape -- recipes/gdal, recipes/pyarrow and recipes/pymupdf all ship it
+and are verified on device.
+
+--- a/pyproj/__init__.py
++++ b/pyproj/__init__.py
+@@ -30,6 +30,49 @@
+ """
+ 
+ import warnings
++
++# mobile-forge (iOS): the extension modules below link libproj through @rpath,
++# and flet relocates each of them into its own *.framework bundle while
++# libproj.dylib ships as a plain file in site-packages/opt/lib. Nothing on the
++# extensions' rpath resolves that, so the first import otherwise dies with
++# "Library not loaded: @rpath/libproj.dylib". Preload it RTLD_GLOBAL first:
++# once the image is loaded, dyld satisfies each extension's @rpath reference by
++# matching the already-loaded image's install-id. If a flet build DID relocate
++# it into a framework it leaves a "libproj.fwork" text marker holding the
++# app-relative path, so follow that instead. No-op on Android, where DT_NEEDED
++# resolves libproj.so by basename out of jniLibs, and on desktop, where there is
++# no opt/lib to find. Same shape as recipes/gdal and recipes/pyarrow.
++try:
++    import ctypes as _mf_ctypes
++    import os as _mf_os
++
++    _mf_optlib = _mf_os.path.join(
++        _mf_os.path.dirname(_mf_os.path.dirname(_mf_os.path.abspath(__file__))),
++        "opt",
++        "lib",
++    )
++    _mf_dylib = _mf_os.path.join(_mf_optlib, "libproj.dylib")
++    if _mf_os.path.exists(_mf_dylib):
++        try:
++            _mf_ctypes.CDLL(_mf_dylib, mode=_mf_ctypes.RTLD_GLOBAL)
++        except OSError:
++            pass
++    else:
++        _mf_fwork = _mf_os.path.join(_mf_optlib, "libproj.fwork")
++        if _mf_os.path.exists(_mf_fwork):
++            _mf_rel = open(_mf_fwork).read().strip()
++            _mf_dir = _mf_optlib
++            for _ in range(12):
++                _mf_dir = _mf_os.path.dirname(_mf_dir)
++                _mf_candidate = _mf_os.path.join(_mf_dir, _mf_rel)
++                if _mf_os.path.exists(_mf_candidate):
++                    try:
++                        _mf_ctypes.CDLL(_mf_candidate, mode=_mf_ctypes.RTLD_GLOBAL)
++                    except OSError:
++                        pass
++                    break
++except Exception:
++    pass
+ 
+ import pyproj.network
+ from pyproj._context import (  # noqa: F401 pylint: disable=unused-import

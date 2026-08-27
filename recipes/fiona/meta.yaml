@@ -18,7 +18,11 @@ build:
   # means one driver registry, so ios-driver-registry.patch is gone; a preload
   # shim replaces it, because the extensions link the dylib through @rpath and
   # nothing on their rpath resolves it after flet relocates them.
-  number: 14
+  number: 15
+  # 15 rebuilds against flet-libgdal build 4, whose libgdal.dylib links the
+  # shared libproj instead of absorbing it -- so this package, the other GDAL
+  # consumers and pyproj all resolve one PROJ. The preload shim loads libproj
+  # before libgdal, in dependency order.
   script_env:
     GDAL_VERSION: 3.13.1
     # fiona reads GDAL_LIB_PATH (a colon-separated list); pyogrio's is spelled

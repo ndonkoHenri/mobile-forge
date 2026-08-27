@@ -20,27 +20,16 @@ fi
 # Libraries the SHARED libgdal must resolve for itself on iOS.
 #
 # GDAL_USE_EXTERNAL_LIBS=OFF makes GDAL use its own internal libtiff/libjpeg/
-# zlib/etc, so GDAL proper needs nothing here. libproj.a is the reason: it calls
-# into libtiff (reading GTiff grid files), libcurl (fetching grids over the
-# network) and sqlite3 (opening proj.db), and flet-libproj builds for iOS with
-# `-undefined dynamic_lookup`, so its archive leaves all of them unresolved.
+# zlib/etc, renamed with a `gdal_` prefix so they cannot clash, so GDAL proper
+# needs very little here. PROJ is a real shared library of its own from
+# flet-libproj build 11, and it resolves ITS dependency tree (tiff, jpeg, curl,
+# ssl, crypto, psl) inside its own dylib -- so this list is just what GDAL
+# itself binds: the iOS system sqlite3 and zlib.
 #
-# Under a static libgdal that debt was paid much later, at each consumer's
-# extension link, which is what the long `GDAL_LIBS: gdal,proj,tiff,curl,psl,
-# sqlite3,jpeg,ssl,crypto,z` chain in gdal/fiona/rasterio/pyogrio is for. A real
-# dylib has to settle it once, here -- which is the point: linked once instead
-# of once per extension per package.
-#
-# libtiff in turn needs libjpeg, including its 12-bit entry points -- GDAL's
-# INTERNAL libjpeg cannot satisfy those, because GDAL renames its symbols to
-# avoid exactly this kind of collision, so the external flet-libjpeg is what
-# resolves them. libcurl is configured --with-openssl, hence ssl/crypto (and
-# psl, its public suffix list). sqlite3 and z are iOS system libraries and
-# resolve from the SDK. Ordered by dependency, since these are static archives.
-#
-# This list is closed, not guessed: every symbol the archives reference and do
-# not define between them is libc++, libSystem, sqlite3, z or compiler-rt.
-IOS_GDAL_LINK_LIBS="-L$PLATLIB/opt/lib -ltiff -ljpeg -lcurl -lssl -lcrypto -lpsl -lsqlite3 -lz"
+# libgdal.dylib therefore comes out with exactly one @rpath dependency,
+# @rpath/libproj.dylib, and pyproj links the same image -- which is why
+# configuring the PROJ database once configures it for GDAL and pyproj both.
+IOS_GDAL_LINK_LIBS="-L$PLATLIB/opt/lib -lsqlite3 -lz"
 
 mkdir build
 cd build
@@ -85,7 +74,7 @@ else
         -DCMAKE_CXX_FLAGS="$CFLAGS" \
         -DCMAKE_SHARED_LINKER_FLAGS="$IOS_GDAL_LINK_LIBS" \
         -DGDAL_USE_EXTERNAL_LIBS=OFF \
-        -DPROJ_LIBRARY=$PLATLIB/opt/lib/libproj.a \
+        -DPROJ_LIBRARY=$PLATLIB/opt/lib/libproj.dylib \
         -DPROJ_INCLUDE_DIR=$PLATLIB/opt/include \
         -DSQLite3_LIBRARY=$SDK_ROOT/usr/lib/libsqlite3.tbd \
         -DSQLite3_INCLUDE_DIR=$SDK_ROOT/usr/include \

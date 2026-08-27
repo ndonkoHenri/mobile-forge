@@ -8,7 +8,11 @@ source:
   url: https://download.osgeo.org/proj/proj-{{ version }}.tar.gz
 
 build:
-  number: 10
+  # 11 builds iOS SHARED (see build.sh). A static libproj is copied into every
+  # extension that links it, so pyproj carried eight separate PROJ instances --
+  # each with its own proj.db search path, so `set_data_dir()` configured one of
+  # eight. Shared also lets libgdal and pyproj share a single PROJ.
+  number: 11
 # {% if sdk != 'android' %}
   script_env:
     LDFLAGS: '-undefined dynamic_lookup'
@@ -20,6 +24,13 @@ requirements:
   host:
     - flet-libtiff 4.7.0
     - flet-libcurl 8.11.0
+# {% if sdk in ['iphoneos', 'iphonesimulator'] %}
+    # Only needed to LINK the shared library: libcurl is built --with-openssl,
+    # and a real dylib has to resolve its own dependency tree rather than
+    # deferring it to each consumer's extension link.
+    - openssl >=3.0.15
+    - flet-libjpeg 3.0.90
+# {% endif %}
 
 about:
   license: MIT

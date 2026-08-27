@@ -1,47 +1,48 @@
-Preload libgdal.dylib before the extensions that link it, so iOS can resolve it.
+Preload libproj + libgdal before the extensions that link them, so iOS resolves them.
 
-flet-libgdal ships a shared libgdal.dylib for iOS as of build 3, which is what
-lets every extension in this package share one GDAL -- and therefore one driver
-registry, retiring ios-driver-registry.patch. Delivery is the remaining problem:
-serious_python relocates each extension module into its own *.framework bundle,
-while libgdal.dylib stays a plain file in site-packages/opt/lib, and nothing on
-the relocated extensions' rpath points at it. dyld then fails the @rpath lookup
-at first import:
+flet-libgdal ships a shared libgdal.dylib for iOS, and from its build 4 that
+dylib links the shared libproj.dylib rather than absorbing PROJ -- so gdal,
+fiona, rasterio, pyogrio and pyproj all resolve ONE GDAL and ONE PROJ. That is
+what gives the app a single driver registry and a single PROJ database search
+path, and it is why no per-extension registration patch is needed.
+
+Delivery is the remaining problem: serious_python relocates each extension
+module into its own *.framework bundle, while the dylibs stay plain files in
+site-packages/opt/lib, and nothing on the relocated extensions' rpath points at
+them. dyld then fails the @rpath lookup at first import:
 
     ImportError: dlopen(...): Library not loaded: @rpath/libgdal.dylib
 
-Loading the dylib RTLD_GLOBAL before any extension is imported sidesteps the
-search: dyld binds each @rpath reference by matching an already-loaded image's
-install-id. The "<name>.fwork" fallback covers a future serious_python that does
-relocate it, and every failure is swallowed, because on Android and on desktop
-this block must be inert rather than fatal.
+Loading them RTLD_GLOBAL in dependency order (libproj, then libgdal, which
+depends on it) sidesteps the search: dyld binds each @rpath reference by
+matching an already-loaded image's install-id. The "<name>.fwork" fallback
+covers a serious_python that does relocate them, and every failure is swallowed,
+because on Android and on desktop this block must be inert rather than fatal.
 
-Proven shape -- recipes/pyarrow (libarrow, also in opt/lib) and recipes/pymupdf
-(libmupdf, alongside the package) both ship it and are on-device verified.
-
-Retires ios-driver-registry.patch, which existed only because each extension
-had its own static GDAL and therefore its own driver registry.
+Proven shape -- recipes/pyarrow and recipes/pymupdf both ship it and are
+verified on device, as is the `av` recipe on the unmerged pyav branch, whose 49
+extensions preload seven FFmpeg dylibs the same way.
 
 --- a/pyogrio/__init__.py
 +++ b/pyogrio/__init__.py
-@@ -7,6 +7,49 @@
+@@ -7,6 +7,51 @@
  
      if shapely.__version__ < "2.0.0":
          import shapely.geos
 +except Exception:
 +    pass
 +
-+# mobile-forge (iOS): the extension modules below link libgdal through @rpath,
-+# and flet relocates each of them into its own *.framework bundle while
-+# libgdal.dylib ships as a plain file in site-packages/opt/lib. Nothing on the
++# mobile-forge (iOS): the extension modules below link libgdal, which itself links libproj, through @rpath,
++# and flet relocates each of them into its own *.framework bundle while the
++# dylibs ship as plain files in site-packages/opt/lib. Nothing on the
 +# extensions' rpath resolves that, so the first import otherwise dies with
-+# "Library not loaded: @rpath/libgdal.dylib". Preload it RTLD_GLOBAL first:
-+# once the image is loaded, dyld satisfies each extension's @rpath reference by
-+# matching the already-loaded image's install-id. If a flet build DID relocate
-+# it into a framework it leaves a "libgdal.fwork" text marker holding the
-+# app-relative path, so follow that instead. No-op on Android, where DT_NEEDED
-+# resolves libgdal.so by basename out of jniLibs, and on desktop, where there is
-+# no opt/lib to find. Same shape as recipes/pyarrow and recipes/pymupdf.
++# "Library not loaded: @rpath/lib....dylib". Preload them RTLD_GLOBAL first, in
++# dependency order: once an image is loaded, dyld satisfies each @rpath
++# reference by matching the already-loaded image's install-id. Where a flet
++# build DID relocate one into a framework it leaves a "<name>.fwork" text
++# marker holding the app-relative path, so follow that instead. No-op on
++# Android, where DT_NEEDED resolves the .so by basename out of jniLibs, and on
++# desktop, where there is no opt/lib to find.
 +try:
 +    import ctypes as _mf_ctypes
 +    import os as _mf_os
@@ -51,26 +52,28 @@ had its own static GDAL and therefore its own driver registry.
 +        "opt",
 +        "lib",
 +    )
-+    _mf_dylib = _mf_os.path.join(_mf_optlib, "libgdal.dylib")
-+    if _mf_os.path.exists(_mf_dylib):
-+        try:
-+            _mf_ctypes.CDLL(_mf_dylib, mode=_mf_ctypes.RTLD_GLOBAL)
-+        except OSError:
-+            pass
-+    else:
-+        _mf_fwork = _mf_os.path.join(_mf_optlib, "libgdal.fwork")
-+        if _mf_os.path.exists(_mf_fwork):
-+            _mf_rel = open(_mf_fwork).read().strip()
-+            _mf_dir = _mf_optlib
-+            for _ in range(12):
-+                _mf_dir = _mf_os.path.dirname(_mf_dir)
-+                _mf_candidate = _mf_os.path.join(_mf_dir, _mf_rel)
-+                if _mf_os.path.exists(_mf_candidate):
-+                    try:
-+                        _mf_ctypes.CDLL(_mf_candidate, mode=_mf_ctypes.RTLD_GLOBAL)
-+                    except OSError:
-+                        pass
-+                    break
++    for _mf_base in ("libproj", "libgdal"):
++        _mf_dylib = _mf_os.path.join(_mf_optlib, _mf_base + ".dylib")
++        if _mf_os.path.exists(_mf_dylib):
++            try:
++                _mf_ctypes.CDLL(_mf_dylib, mode=_mf_ctypes.RTLD_GLOBAL)
++            except OSError:
++                pass
++            continue
++        _mf_fwork = _mf_os.path.join(_mf_optlib, _mf_base + ".fwork")
++        if not _mf_os.path.exists(_mf_fwork):
++            continue
++        _mf_rel = open(_mf_fwork).read().strip()
++        _mf_dir = _mf_optlib
++        for _ in range(12):
++            _mf_dir = _mf_os.path.dirname(_mf_dir)
++            _mf_candidate = _mf_os.path.join(_mf_dir, _mf_rel)
++            if _mf_os.path.exists(_mf_candidate):
++                try:
++                    _mf_ctypes.CDLL(_mf_candidate, mode=_mf_ctypes.RTLD_GLOBAL)
++                except OSError:
++                    pass
++                break
  except Exception:
      pass
  

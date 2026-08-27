@@ -17,6 +17,18 @@ if [ ! -f "$SQLITE3_INC/sqlite3.h" ]; then
     done
 fi
 
+# Libraries the SHARED libproj must resolve for itself on iOS. PROJ calls into
+# libtiff (reading GTiff grid files), libcurl (fetching grids over the network)
+# and sqlite3 (opening proj.db); libtiff in turn needs libjpeg, and libcurl is
+# configured --with-openssl, hence ssl/crypto and psl. sqlite3 and z are iOS
+# system libraries and resolve from the SDK. Ordered by dependency, since these
+# are static archives.
+#
+# Under a static libproj these stayed undefined and every consumer's extension
+# link paid for them -- which is what the PROJ_LIBS chain in recipes/pyproj was
+# for. A real dylib settles it once, here.
+IOS_PROJ_LINK_LIBS="-L$PLATLIB/opt/lib -ltiff -ljpeg -lcurl -lssl -lcrypto -lpsl -lsqlite3 -lz"
+
 if [ $CROSS_VENV_SDK == "android" ]; then
     cmake \
         -DCMAKE_SYSTEM_NAME=Android \
@@ -40,7 +52,8 @@ else
         -DCMAKE_OSX_ARCHITECTURES=$HOST_ARCH \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=$PREFIX \
-        -DBUILD_SHARED_LIBS=OFF \
+        -DBUILD_SHARED_LIBS=ON \
+        -DCMAKE_SHARED_LINKER_FLAGS="$IOS_PROJ_LINK_LIBS" \
         -DBUILD_TESTING=0 \
         -DTIFF_LIBRARY="$PLATLIB/opt/lib/libtiff.a" \
         -DTIFF_INCLUDE_DIR="$PLATLIB/opt/include" \
@@ -52,6 +65,31 @@ fi
 
 cmake --build . -j $CPU_COUNT
 cmake --build . --target install
+
+# iOS ships libproj SHARED so that every extension of a consumer resolves ONE
+# image -- pyproj has eight extensions that use PROJ, and a static archive gives
+# each its own copy of PROJ's globals, including the proj.db search path a
+# `set_data_dir()` writes to. Shared also means libgdal and pyproj share one
+# PROJ, so configuring the database once configures it for both.
+#
+# De-version and stamp an @rpath install id, for the same reasons as
+# recipes/flet-libgdal: serious_python's framework relocation globs both
+# "libproj.*.dylib" and "libproj.dylib", so a versioned dylib plus its symlinks
+# makes `lipo -create` fail ("duplicate architecture") and the simulator
+# framework is silently never built.
+if [ $CROSS_VENV_SDK != "android" ]; then
+    echo "=== de-versioning libproj.dylib for iOS ==="
+    _real="$(find "$PREFIX/lib" -maxdepth 1 -type f -name "libproj.*.dylib" | head -1)"
+    if [ -n "$_real" ]; then
+        mv "$_real" "$PREFIX/lib/libproj.dylib.tmp"
+        find "$PREFIX/lib" -maxdepth 1 -name "libproj.*.dylib" -delete
+        rm -f "$PREFIX/lib/libproj.dylib"
+        mv "$PREFIX/lib/libproj.dylib.tmp" "$PREFIX/lib/libproj.dylib"
+    fi
+    install_name_tool -id "@rpath/libproj.dylib" "$PREFIX/lib/libproj.dylib"
+    echo "=== install id: $(otool -D "$PREFIX/lib/libproj.dylib" | tail -1) ==="
+    otool -L "$PREFIX/lib/libproj.dylib"
+fi
 
 rm -rf $PREFIX/{bin,share}
 rm -rf $PREFIX/lib/{cmake,pkgconfig}
