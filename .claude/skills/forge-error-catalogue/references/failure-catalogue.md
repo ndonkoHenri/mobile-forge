@@ -1911,6 +1911,52 @@ library instances, so configuration set through one extension (`rasterio.Env()`,
 `pyogrio.set_gdal_config_options()`) still does not reach another. The complete fix
 is a SHARED `flet-lib*` for iOS.
 
+**FIRST decide whether a split is even a defect — most are not.** A duplicated
+static lib costs bytes; it costs *correctness* only when the API depends on state
+shared across calls. The discriminator, which settled every case in a 9-package
+audit of this index:
+
+> Does the library have a **register-then-look-up table**, a **one-shot process
+> init**, or a **thread pool**?
+
+- **Defect:** GDAL (`GDALAllRegister()` fills a table `GDALOpen()` later consults
+  by name), `sodium_init()`-style one-shot init, OpenMP/threaded runtimes
+  (several libomp/libiomp copies in one process is a known hang/abort hazard).
+- **Benign:** explicit-handle or stateless APIs, where every operand is a call
+  argument — BLAS/LAPACK, FreeType (`FT_Library`), libjpeg (caller-owned
+  `j_decompress_ptr`), libyaml (caller-owned structs), MuPDF (`fz_context`),
+  GEOS (`GEOS_init_r`). Absorbing these N times is a size problem only.
+
+**Splits AUDITED AND CONFIRMED BENIGN — do not re-flag these** (2026-08-27):
+
+| package | what is duplicated | why benign |
+| --- | --- | --- |
+| scipy | 13 extensions each with a whole OpenBLAS (32 MB of 67 MB native) | BLAS/LAPACK ABI passes everything as arguments; `flet-libopenblas` is built `USE_THREAD=0 NUM_THREADS=1`, so `blas_thread_init`/`exec_blas`/`GOMP_parallel` are absent from all 105 extensions and `openblas_set_num_threads` is compiled out — there is no setter whose effect could land in the wrong copy |
+| numpy | 2 copies of bundled f2c reference LAPACK (`lapack_lite`, `_umath_linalg`) | duplicated globals are f2c function-local statics only (per-call scratch + an idempotent cache of IEEE-754 machine constants both copies compute identically). Also `lapack_lite` is normally never even imported |
+| pillow | `MODES`/`RAWMODES` in `_imaging` + `_imagingft` | `const`, statically initialised, read-only; modes cross module boundaries as an int enum, never as a pointer into the table. Same shape in upstream's own wheels |
+| scikit-learn | vendored newrand `set_seed` in `_libsvm`, `_liblinear`, `_libsvm_sparse` | the seeder is always the caller, never a sibling module; official macOS PyPI wheel is byte-identical in shape |
+
+**`nm -gU` + `nm -u` alone produces FALSE NEGATIVES — `nm -a` is mandatory.** An
+extension that exports only its `PyInit_*` keeps every absorbed routine as a
+LOCAL symbol (`t` for text, `b` for bss), so both a "defined" and an "imported"
+probe return 0 and the library looks absent. This bit three packages in one
+audit (numpy's f2c LAPACK, matplotlib's entire FreeType, pynacl's
+`randombytes_sysrandom`). Use `nm -a <ext> | grep -cE ' [tT] <sym>$'`.
+
+Two more traps when censusing symbols: probing one or two names is unreliable
+because they may be inlined away (matplotlib's `FT_Init_FreeType` was inlined
+from module init — its absence was NOT evidence FreeType was absent), so census
+the whole family (`FT_`/`TT_`/`sfnt_`, `jpeg_`/`jinit_`, `cblas_`/`openblas_`)
+instead; and mangled C++ produces false hits (`grep -i 'FT_'` matched 14
+pybind11 template fragments like `MT0_FT_DpT1_`, and `goto_` matched numpy's own
+`_npyiter_goto_iterindex`).
+
+**Check the premise before auditing.** Two of nine audits were chasing a library
+the wheel does not contain: numpy is built `-Dblas=none -Dlapack=none` and links
+no OpenBLAS at all, and matplotlib vendors its own FreeType rather than
+consuming `flet-libfreetype`. A `flet-lib*` string in `meta.yaml` is not proof it
+reaches the wheel — confirm with `nm`/`METADATA` on the built artifact.
+
 ---
 
 ## Recipe-tester app failures
