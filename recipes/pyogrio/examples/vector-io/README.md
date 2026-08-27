@@ -26,8 +26,9 @@ What it demonstrates:
 - **What the driver table proves, and what it does not.**
   [`list_drivers()`](https://pyogrio.readthedocs.io/en/latest/api.html#pyogrio.list_drivers)
   reads the registry through pyogrio's `_ogr` extension; reads and writes happen in `_io`.
-  Those are two views of one library on Android and two separate libraries on iOS, which is
-  why the app shows the registry and the round trip side by side.
+  Those are two views of one library on Android and two statically linked copies on iOS, so
+  a healthy-looking table is not on its own evidence that a round trip will run. That is why
+  the app shows the registry and the round trip side by side rather than either alone.
 - **Compute off the UI thread.** Each run goes through
   [`page.run_thread(...)`](https://flet.dev/docs/controls/page/#flet.Page.run_thread) with
   the button disabled and a spinner up, and ends with the explicit
@@ -49,9 +50,7 @@ bytes of each double; GeoJSON stores the digits and parses them back.
 # Android
 uv run flet build apk
 
-# iOS and iOS-Simulator — both build and start, and then every read and write
-# fails with DataSourceError. The driver table still fills in, because that is
-# the half that works. See ../../README.md#install
+# iOS
 uv run flet build ipa
 uv run flet build ios-simulator
 ```
