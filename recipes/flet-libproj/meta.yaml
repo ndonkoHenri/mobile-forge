@@ -33,21 +33,25 @@ requirements:
 # {% endif %}
 
 about:
-  # The iOS build is SHARED, and a shared library CONTAINS what it links: this
-  # dylib absorbs libtiff, libjpeg-turbo, libcurl, libpsl and OpenSSL, none of
-  # which PROJ's own COPYING covers. Same reasoning as flet-libjq bundling
-  # oniguruma's notice and flet-libpsl bundling the Chromium DAFSA one.
+  # A shared library CONTAINS what it links, and the two platforms link
+  # differently, so the licence differs with them.
   #
-  # The obligation did not appear with the shared build -- under the static one
-  # the same object code was pulled into each CONSUMER's extension instead, so
-  # it shipped inside pyproj's wheel, which as a Python-package recipe has no
-  # mechanism to add licence files. Moving it here is what makes it declarable.
+  # iOS has no shared libtiff/libcurl to link, so this dylib absorbs libtiff,
+  # libjpeg-turbo, libcurl, libpsl and OpenSSL -- none of them covered by PROJ's
+  # COPYING. Android links libtiff.so and libcurl.so by DT_NEEDED (verified on
+  # the published wheel) and absorbs nothing, so there the wheel is PROJ alone.
+  # Declaring the iOS set on both would tell an Android consumer they ship
+  # MPL-2.0 and Apache-2.0 code they do not have.
   #
-  # Android links these as real shared libraries, so nothing is absorbed there
-  # and only MIT would apply; the wheel carries one licence set for both rather
-  # than diverging, which over-states Android's obligations and never
-  # under-states iOS's. MPL-2.0 is the one with teeth -- libpsl compiles in the
-  # Public Suffix List data.
+  # The obligation is not new to the shared build: under the static one the same
+  # object code was pulled into each CONSUMER's extension, so it shipped inside
+  # pyproj's wheel -- and a Python-package recipe cannot attach licence files at
+  # all. Moving the embedding here is what makes it declarable.
+  #
+  # MPL-2.0 is the one with teeth: libpsl compiles in the Public Suffix List
+  # data. Same shape as flet-libjq bundling oniguruma and flet-libpsl bundling
+  # the Chromium DAFSA notice.
+# {% if sdk in ['iphoneos', 'iphonesimulator'] %}
   license_file:
     - COPYING
     - licenses/LICENSE.libtiff.md
@@ -57,3 +61,7 @@ about:
     - licenses/LICENSE.chromium
     - licenses/LICENSE.openssl
   license: MIT AND libtiff AND BSD-4.3TAHOE AND IJG AND BSD-3-Clause AND Zlib AND curl AND MPL-2.0 AND Apache-2.0
+# {% else %}
+  license_file: COPYING
+  license: MIT
+# {% endif %}

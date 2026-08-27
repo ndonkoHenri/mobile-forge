@@ -122,14 +122,15 @@ os.environ["PROJ_DATA"] = proj_dir        # before `import pyproj`; reaches ever
 pyproj.datadir.set_data_dir(proj_dir)     # after it
 ```
 
-**Set the environment variable as well as calling `set_data_dir`, and on iOS treat the
-variable as the one that counts.** `flet-libproj` is a static archive there, so PROJ is linked
-into each pyproj extension separately: eight of them are 9.3–9.7 MB and carry their own copy,
-against 202 KB for `_geod`, which does not. An environment variable crosses that, because every
-copy reads the same process environment; an API call configures whichever copy it lands in, and
-which copies `set_data_dir` reaches on iOS has not been measured. Android has one shared
-`libproj.so` and one instance, so either works there. Same split as the driver registry in
-[`rasterio`](../rasterio), [`fiona`](../fiona) and [`pyogrio`](../pyogrio).
+Either mechanism works, on both platforms: all ten extensions link one shared PROJ, so
+`set_data_dir` and `PROJ_DATA` configure the same instance. Setting the variable *as well* is
+still worth doing, because it is the only one that applies before `import pyproj` — PROJ reads
+it when a context is first created, and anything that resolves a CRS during import has already
+gone past `set_data_dir`.
+
+The same shared PROJ is what [`gdal`](../gdal), [`fiona`](../fiona), [`rasterio`](../rasterio)
+and [`pyogrio`](../pyogrio) link, so a database configured for pyproj is configured for them
+too — one `proj.db` for the whole app rather than one per package.
 
 Take it from the same-version PyPI wheel, whose macOS arm64 build carries
 `pyproj/proj_dir/share/proj` as 16 files totalling about 9.4 MB. **`proj.db` on its own — about
@@ -235,14 +236,15 @@ are the whole story, and iOS carries about seventy times what Android does:
 Those are decimal MB; `du -h` and the Finder report binary units and read about 5% lower for
 the same bytes.
 
-Android loads PROJ from a separate chain of shared libraries on top of that — about 7.5 MB on
-arm64-v8a, 5.2 MB on armeabi-v7a and 8.3 MB on x86_64 — while iOS installs none, because each
-extension already contains its own copy. So on Android, use an app bundle, split APKs, or
+Both platforms load PROJ from a separate shared library on top of that — on Android a chain of
+about 7.5 MB on arm64-v8a, 5.2 MB on armeabi-v7a and 8.3 MB on x86_64; on iOS a single
+`libproj.dylib`, 3.6–3.9 MB compressed and 9.9–10.4 MB unpacked, which absorbs libtiff,
+libjpeg, libcurl, libpsl and OpenSSL rather than chaining to them. So on Android, use an app bundle, split APKs, or
 narrow [`target_arch`](https://flet.dev/docs/publish/android/#supported-target-architectures)
 when the app does not need every ABI; that lever is worth more here than the wheel column
-suggests, since the native chain is carried once per ABI. **On iOS there is no lever.** Eight
-of the ten extensions each absorb a full copy of PROJ, `import pyproj` loads all ten
-regardless, and an app that only wants `Geod` pays the same 75 MB;
+suggests, since the native chain is carried once per ABI. On iOS the same shared
+`libproj.dylib` serves every GDAL consumer in the app as well, so a project using pyproj
+beside [`rasterio`](../rasterio) or [`fiona`](../fiona) pays for PROJ once;
 [`[tool.flet.cleanup]`](https://flet.dev/docs/publish/#compilation-and-cleanup) cannot reach
 it. Budget for it, and add whatever database you decide to ship. These figures describe the
 package payload, not the exact amount added to the final APK or IPA; packaging and compression
@@ -361,23 +363,22 @@ chain is **7,513,872 bytes of `.so` on arm64-v8a** — `libproj.so` 4,640,656, `
 against 5,227,468 on armeabi-v7a and 8,347,680 on x86_64, on top of pyproj's own 1,039,288.
 Every `LOAD` segment in all of them, across all three ABIs, reports `align 0x4000`.
 
-**iOS: PROJ absorbed into the extensions instead, into eight of the ten separately.**
-`flet-libproj` ships `libproj.a` (7,553,816 bytes) and no shared library at all, and the link
-pulls it into each extension that touches the database. `_context`, `_crs`, `_network`,
-`_sync`, `_transformer`, `_version`, `database` and `list` each carry PROJ's version string,
-its `cdn.proj.org` endpoint and its database-layout checks, at 9,273,576–9,702,872 bytes
-apiece; `_compat` (103,792) and `_geod` (202,664) do not, the geodesic code being small and
-self-contained. Total **75,347,880 bytes of extension on the device slice**. All ten are
-`MH_DYLIB`, so forge's `MH_BUNDLE` conversion has nothing to do, and `otool -L` on each lists
-only its own install name, `@rpath/Python.framework/Python`, `/usr/lib/libsqlite3.dylib`,
-`/usr/lib/libz.1.dylib` and `/usr/lib/libSystem.B.dylib` — no libcurl, no libtiff, no libc++.
-The C++ runtime is instead 124 flat-namespace symbols in each of those eight (`nm -m`;
-`_compat` and `_geod` have none), bound against the OS at `dlopen`. The static
-curl/OpenSSL/tiff objects really are inside: `_context` *defines* `_SSL_connect`,
-`_TIFFClientOpen` and `_psl_builtin` as text symbols. SQLite differs across the platforms too —
-Android's `libproj.so` links `libsqlite3_python.so` from Flet's Python bundle, iOS binds the
-system `/usr/lib/libsqlite3.dylib` — and either way it is that SQLite which opens whatever
-`proj.db` the app supplies.
+**iOS: one shared `libproj.dylib`, the same shape as Android.** `flet-libproj` ships a real
+shared library, so all ten extensions name `@rpath/libproj.dylib` in `otool -L` and none of
+them carries PROJ itself — check with `nm -a <ext> | grep " [tT] _proj_create"`, which must be
+empty for every one. The extensions are 71 KB–535 KB as a result, against a 550–580 KB wheel.
+
+What the dylib absorbs is PROJ's own dependency tree — libtiff (GTiff grids), libjpeg (which
+libtiff needs), libcurl (network grids), libpsl and OpenSSL (which libcurl needs) — because
+none of those ships as a shared library for iOS. That is why `flet-libproj`'s licence
+expression is a composite there and plain MIT on Android, where they are linked by
+`DT_NEEDED` instead; the reasoning is written out in that recipe's `meta.yaml`. Verify with
+`nm -a` that `_TIFFClientOpen`, `_curl_easy_init`, `_psl_builtin` and `_SSL_CTX_new` are
+defined inside `libproj.dylib`, not inside any extension.
+
+SQLite differs across the platforms — Android's `libproj.so` links `libsqlite3_python.so` from
+Flet's Python bundle, iOS binds the system `/usr/lib/libsqlite3.dylib` — and either way it is
+that SQLite which opens whatever `proj.db` the app supplies.
 
 **No `extract_packages` entry and no loader shim.** All 65 entries in the wheel are ten
 extensions, 20 `.py` files, Cython sources and stubs, and `dist-info` — no data file of any
@@ -425,15 +426,17 @@ and three iOS slices, plus a legacy 32-bit `android_24_x86` slice on 3.12, which
   `(530042.625993872, 180380.44930295716)`. A PROJ bump that moves any digit means the
   accuracy sentence in Usage no longer holds.
 
-- **The PROJ version, in two places**: `strings` on `flet-libproj`'s `libproj.so` (and
-  `libproj.a`), and the eight iOS extensions that absorb it. They can disagree only if a pyproj
-  rebuild is skipped after a `flet-libproj` bump — on Android those are genuinely separate
-  files. The version belongs on the example's header line, not in an assertion.
-- **The linkage split.** Android: `DT_NEEDED` still naming `libproj.so` with no
-  `libc++_shared`, `SONAME libproj.so`, and the `libtiff`/`libcurl`/`libjpeg`/`libpsl` chain
-  intact, plus 16 KB `PT_LOAD` alignment on all ten extensions and on `libproj.so`. iOS: still
-  ten `MH_DYLIB`s, still exactly eight of them carrying PROJ, `otool -L` still naming no
-  curl/tiff/c++.
+- **The PROJ version** comes from `flet-libproj`'s `libproj.so` / `libproj.dylib` on both
+  platforms now, so `strings` on that one file answers it. The version belongs on the
+  example's header line, not in an assertion.
+- **That PROJ is still SHARED on both platforms, first.** Android: `DT_NEEDED` still naming
+  `libproj.so` with no `libc++_shared`, `SONAME libproj.so`, the
+  `libtiff`/`libcurl`/`libjpeg`/`libpsl` chain intact, and 16 KB `PT_LOAD` alignment on all ten
+  extensions and on `libproj.so`. iOS: ten `MH_DYLIB`s each naming `@rpath/libproj.dylib`, and
+  `nm -a <ext> | grep " [tT] _proj_create"` EMPTY for every one. A definition there means the
+  link absorbed a static PROJ again, which puts a private database search path back in each
+  extension and makes `set_data_dir` configure one of them. The wheel size is the cheap tell:
+  it should stay well under a megabyte.
 - **A device run of the [`control-points`](examples/control-points) example.** If a pyproj bump
   tightened the data-directory check, every panel becomes a `DataDirError` row — visibly rather
   than silently.
