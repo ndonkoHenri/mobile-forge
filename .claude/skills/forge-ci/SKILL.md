@@ -268,6 +268,27 @@ Two habits that survive the fix:
   `{name}-{version}-{build}-{py}-{abi}-{platform}.whl`. A tag lower than what is
   published at that version means the run accomplished nothing downstream.
 
+### A recipe chain mid-flight needs DISPATCH, not push — and the push run will be red
+
+`prebuild_recipes` is a **dispatch input only**. The push path builds whatever the
+changed-files detection selects and resolves every `flet-lib*` from pypi.flet.dev, so
+while a library and its consumers are being changed together the push run links the
+consumers against the PUBLISHED library. If the consumer recipes have already moved on
+— a collapsed `GDAL_LIBS`, `-undefined dynamic_lookup` removed — that cannot link, and
+every affected job goes red until the library is published.
+
+Seen on the shared-libgdal/libproj work: push run 33118055088 failed every iOS job with
+`Undefined symbols … libgdal.a[29](cpl_conv.cpp.o)` — the static archive from the index —
+while the dispatched run with `prebuild_recipes="flet-libproj,flet-libgdal"` was green.
+Android passed throughout, because its libraries were already shared.
+
+Two consequences:
+
+- **Validate such a chain by dispatch, naming every library in `prebuild_recipes` in
+  dependency order.** Expect the accompanying push run to be red and do not chase it.
+- **Publish order matters at merge.** The libraries must reach the index before or with
+  their consumers, or the first consumer build after merge links a stale library.
+
 ## Testing recipes against UNRELEASED serious_python / python-build (pre-PR validation)
 
 When a recipe's green depends on an sp/python-build fix that isn't in a published
