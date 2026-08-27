@@ -24,18 +24,15 @@ rasterio needs **Python 3.12 or newer**, so the app's `requires-python` has to b
 back to an older rasterio.
 
 Both platforms open, read and write rasters; a 64×64 float32 GeoTIFF round trip runs on an
-iPhone simulator with no pixels differing. What differs is what it costs. On Android the
-GDAL behind rasterio is one shared `libgdal.so`; on iOS there is no shared GDAL at all, so
-each of the fifteen extensions links its own static copy and an iOS slice is 92–101 MB
-compressed and 271–289 MB unpacked, against 4.2–4.4 MB and 23–24 MB for an Android wheel.
-**Check that against the app's budget before adding the dependency** — it is the largest
-single package in this index, and **App size** has what to do about it.
+iPhone simulator with no pixels differing. Both resolve one shared GDAL — `libgdal.so` on
+Android, `libgdal.dylib` on iOS — so there is a single driver registry and a single
+configuration, and `rasterio.Env()` reaches the code doing the I/O on either platform.
 
-The other thing to know is that those static copies stay separate GDAL instances, so
-configuration does not cross between them: a `rasterio.Env()` entered in one extension is
-not seen by the one doing the I/O. **iOS** under *Things to know* has the detail. If an app
-only needs raster I/O and not rasterio's API, [`gdal`](../gdal)'s SWIG bindings do the same
-work from a single extension and a much smaller wheel.
+Sizes are close now too: an iOS slice is 4.4–4.5 MB compressed and 25.0–25.4 MB unpacked,
+against 4.2–4.4 MB and 23–24 MB for an Android wheel, plus `flet-libgdal` itself once per
+app. Most of that unpacked figure is Cython-generated `.c` that Flet's cleanup removes —
+**App size** has the breakdown. If an app only needs raster I/O and not rasterio's API,
+[`gdal`](../gdal)'s SWIG bindings do the same work from a much smaller wheel.
 
 ## Examples
 
@@ -210,14 +207,13 @@ app does not need every ABI, and leave Flet's default
 20 MB of every unpacked wheel is Cython-generated `.c`/`.cpp` source that cleanup removes, and
 nothing in the package reads its own source, so compiling to `.pyc` is safe.
 
-iOS is in a different league and there is nothing to configure. A slice is 92–101 MB
-compressed and 271–289 MB unpacked, or about 251–269 MB once cleanup removes the same 20 MB
-of generated C, because ten of the fifteen extensions carry a whole static GDAL and weigh
-24–25 MB apiece — `_version`, whose job is to report a version string, among them. A build
-downloads three of those wheels plus three `flet-libgdal` wheels of about 113 MB each, every
-one of which unpacks a half-gigabyte archive that is then deleted, so expect a slow first
-build and plenty of free disk. An `ipa` ships one slice. Where an app needs raster I/O rather
-than rasterio's API, [`gdal`](../gdal) does the same work from a single extension.
+iOS is close behind, and the same cleanup lever does most of the work. A slice is 4.4–4.5 MB
+compressed and 25.0–25.4 MB unpacked, of which roughly 20 MB is the same generated C, so
+cleanup takes it to about 5 MB. On top of that the app carries one `flet-libgdal` —
+9.6–10.4 MB compressed, 27.6–29.3 MB unpacked — shared with every other GDAL consumer, so a
+project using rasterio and [`fiona`](../fiona) together pays for it once. An `ipa` ships one
+slice. Where an app needs raster I/O rather than rasterio's API, [`gdal`](../gdal) does the
+same work from a smaller wheel.
 
 ### Other considerations
 
@@ -291,16 +287,14 @@ above were established — and validate on a device or emulator before shipping.
   does — always shows the computed figure. Quote which one you mean, and do not assert a
   tolerance tighter than 1e-11 without knowing whether a sidecar was there.
 
-- **On iOS each extension carries its own GDAL, so configuration does not cross between
-  them.** No `flet-lib*` on this index ships a shared `libgdal` for iOS, so the link pulls a
-  static copy into each of the fifteen extensions, and each copy has its own driver registry
-  and its own configuration. The registries are populated in every module that resolves a
-  driver name, which is what makes reads, writes and `rasterio.shutil` work there. Options do
-  not follow: a [`rasterio.Env()`](https://rasterio.readthedocs.io/en/stable/api/rasterio.env.html#rasterio.env.Env)
-  entered around a call sets them in `_env`'s GDAL while the I/O happens in `_io`'s. Pass
-  creation and open options through `rasterio.open(...)`, which reaches the instance doing the
-  work, and read `Env` on iOS as describing the registry it queries rather than the dataset you
-  are about to touch. Android has one shared `libgdal.so`, and none of this applies.
+- **All fifteen extensions share one GDAL on both platforms.** They link `libgdal.so` on
+  Android and `libgdal.dylib` on iOS, so there is one driver registry and one configuration:
+  a [`rasterio.Env()`](https://rasterio.readthedocs.io/en/stable/api/rasterio.env.html#rasterio.env.Env)
+  entered around a call is seen by the module doing the I/O, and `rasterio.shutil` resolves
+  the same drivers `rasterio.open` does. The iOS-only wrinkle is invisible from Python: flet
+  relocates each extension into its own framework while the dylib stays a plain file in
+  `opt/lib`, so `rasterio/__init__.py` loads it `RTLD_GLOBAL` before the first extension
+  import. Without that the import fails with `Library not loaded: @rpath/libgdal.dylib`.
 
 - **GEOS is not compiled in**, so OGR geometry predicates and operations are unavailable. Not a
   mobile-only limitation: rasterio's own PyPI wheels report `__geos_version__` as `'0.0.0'`
@@ -337,39 +331,32 @@ chain. Sizes on cp314, in bytes: arm64-v8a 3,356,840 of rasterio extension again
 of `libgdal.so` and 7,513,872 of PROJ chain; armeabi-v7a 2,242,516 / 9,702,048 / 5,227,468;
 x86_64 3,352,952 / 15,283,480 / 8,347,680.
 
-On iOS `flet-libgdal` ships a 524,528,736-byte `libgdal.a` and no shared library, and the link
-pulls it into every extension that touches GDAL: `_base`, `_env`, `_features`, `_fill`, `_io`,
-`_transform`, `_version`, `_warp`, `crs` and `shutil` each carry their own `GDAL 3.13.1`
-version string and weigh 25.3–26.1 MB, for 259,746,200 bytes of extension on the device slice
-against 3,356,840 on Android arm64-v8a. The symbol tables say what that costs: on iOS `_env`,
-`_io`, `_base` and `_features` each *define* `GDALRegister_GTiff` and import it from nobody, so
-each carries its own copy of GDAL's global driver table, while on Android `_env` imports
-`GDALAllRegister` as an undefined symbol resolved at load. `rasterio.Env()` registers into
-`_env`; `rasterio.open` resolves the name in `_base` and `_io`. One table on Android, ten on
-iOS, which is what `ios-driver-registry.patch` exists to populate and why an explicit `Env()`
-never helped.
+On iOS `flet-libgdal` ships `libgdal.dylib`, and all fifteen extensions name
+`@rpath/libgdal.dylib` in `otool -L` — the same shape as Android's `DT_NEEDED libgdal.so`.
+None of them *defines* `GDALAllRegister`; `_env` imports it, which is the module that calls
+it. That is the property to protect on every bump, and it is one command:
 
-**Find the modules that need it in the generated C, not in the linked binary.** A static GDAL
-puts roughly 41 `GDALGetDriverByName` and 121 `GDALOpen` call sites inside *every* iOS
-extension, `crs` and `_version` included, and every one of them also *defines* the
-registration symbols — so neither `nm` nor a raw `otool -tV` count separates rasterio's own
-lookups from GDAL's internals. Grepping `rasterio/*.c` in an Android wheel does: `_base`, `_io`
-and `shutil` call `GDALGetDriverByName` in their own code, and no other module does. Build 12
-patched the first two and shipped with `shutil` still unregistered, which is a quiet failure
-rather than a loud one — `rasterio.shutil.exists()` identifies a format by asking every
-registered driver, and asking none of them returns False rather than raising.
+    nm -a <ext> | grep " [tT] _GDALAllRegister"     # must be empty for every extension
 
-`GDAL_LIBS` solves a *load* failure, not that *table* split: naming GDAL's static dependency
-chain stops dyld aborting on an unresolved `_geod_init` at import and does nothing about the
-registries, which is why there are two patches. All fifteen iOS extensions are `MH_DYLIB`, so forge's `MH_BUNDLE` conversion has
-nothing to do, and `otool -L` on each lists only its own install name,
+**Why it matters more here than the size suggests.** A static `libgdal.a` gets copied into
+each extension that links it, so each would own a private driver registry. rasterio resolves
+driver names in three modules — `_base`, `_io` and `shutil` — while `rasterio.Env()`
+registers in `_env`, so a static build silently splits the table that registers from the
+tables that look up. `shutil` is the one to remember: `rasterio.shutil.exists()` identifies a
+format by asking every registered driver, and asking none of them returns False rather than
+raising, so it reports a file it just wrote as absent.
+
+Find those modules in the **generated C**, never the linked binary — a static GDAL puts
+roughly 41 `GDALGetDriverByName` and 121 `GDALOpen` call sites inside *every* extension,
+`crs` and `_version` included, and defines the registration symbols everywhere, so neither
+`nm` nor a raw `otool -tV` count separates rasterio's own lookups from GDAL's internals.
+Grepping `rasterio/*.c` in an Android wheel does.
+
+All fifteen iOS extensions are `MH_DYLIB`, so forge's `MH_BUNDLE` conversion has nothing to
+do, and `otool -L` on each lists its own install name, `@rpath/libgdal.dylib`,
 `@rpath/Python.framework/Python`, `/usr/lib/libsqlite3.dylib`, `/usr/lib/libz.1.dylib` and
 `/usr/lib/libSystem.B.dylib`, plus `/usr/lib/libc++.1.dylib` on the same three that need
-`libc++_shared` on Android. Building `flet-libgdal` as a shared library for iOS the way Android
-already has it would let `GDAL_LIBS` drop back to `gdal`, close the registry split, and turn a
-~260 MB payload back into Android's ~18 MB at once. That is the fix; there is no consumer-side
-workaround, and `gdal` is the interim answer only because its `_gdal` extension registers from
-its own module init.
+`libc++_shared` on Android.
 
 Two smaller platform differences worth knowing. Android's `libproj.so` links
 `libsqlite3_python.so` from Flet's Python bundle while iOS binds the system
