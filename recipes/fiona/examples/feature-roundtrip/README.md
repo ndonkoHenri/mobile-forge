@@ -20,12 +20,13 @@ a `fiona.errors.FionaError`, so a narrower `except` would miss it anyway.
 
 What it demonstrates:
 
-- **Which side of the iOS split this build is on.** Section 2 prints the driver table
-  [`fiona.Env()`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.env.Env) registers
-  into, and section 3 exercises the one `fiona.open` reads. On Android those are the same
-  shared `libgdal.so`. On iOS they are separate statically linked copies, so section 2 is
-  expected to be a false green light and is printed directly above section 3 for that
-  reason.
+- **That the driver table and the round trip are two different questions.** Section 2 prints
+  the table [`fiona.Env()`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.env.Env)
+  registers into, and section 3 exercises the one `fiona.open` reads. On Android those are
+  the same shared `libgdal.so`; on iOS they are separate statically linked copies, each
+  registered by the recipe's `ios-driver-registry.patch`. They are printed adjacently because
+  a healthy section 2 is not on its own evidence for section 3 — that is exactly how these
+  wheels once looked fine while every write failed.
 - **A round trip that checks itself**, for `GeoJSON` and `ESRI Shapefile` × `Point` and
   `Polygon`: feature count, geometry type per feature, worst absolute coordinate residual,
   worst float-property residual, and mismatched integer and string properties. On a desktop

@@ -28,8 +28,9 @@ def main(page: ft.Page):
     def render(count):
         """Refill the results column from a fresh set of probes.
 
-        The registry comes immediately before the round trip on purpose: on iOS the
-        first is a green light from a driver table the second never consults.
+        The registry comes immediately before the round trip on purpose: on iOS
+        they are different driver tables, so the first is not evidence for the
+        second.
         """
         sections = (
             ("Build", build_lines(page.platform.value)),

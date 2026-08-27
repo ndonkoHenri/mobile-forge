@@ -9,12 +9,17 @@ data — points, lines and polygons carrying attributes — through
 app store, edit and exchange real vector data with no database and no network — everything
 happens in-process, on files in app storage.
 
-**Treat it as an Android package.** On iOS each extension carries its own statically linked
-copy of GDAL, and the copy `fiona.open` resolves driver names in has nothing registered in
-it, so every write fails while the driver list printed one line above it looks healthy. Use
-[`gdal`](../gdal)'s `osgeo.ogr` for vector I/O there — **iOS** below has the detail. On both
-platforms this is a deliberately small GDAL: six vector drivers, no `proj.db`, no
-`GDAL_DATA`, no GEOS and no libcurl. None of that announces itself at import.
+Both platforms read and write. On both this is a deliberately small GDAL: six vector
+drivers, no `proj.db`, no `GDAL_DATA`, no GEOS and no libcurl, and none of that announces
+itself at import — **Drivers** and **Coordinate systems** below say what it rules out. The
+one rule to carry into every call is that a CRS has to be spelled as a proj-string rather
+than `EPSG:4326`, because resolving an authority code is a database lookup and no database
+ships.
+
+What differs by platform is cost. iOS has no shared GDAL, so five of fiona's eight
+extensions link their own static copy at ~25 MB each: a slice is 46–50 MB compressed and
+128–137 MB unpacked, against 0.84–0.96 MB and 1.8–2.6 MB for an Android wheel. **App size**
+puts that beside Android's shared native chain, which is the comparison that decides it.
 
 ## Install
 
@@ -195,10 +200,10 @@ with an explicit
 
 ### App size
 
-Android: approximately 0.8–0.95 MB of compressed wheel and 1.8–2.5 MB unpacked per ABI, on
-top of roughly 21–23 MB of shared native libraries per ABI that come with GDAL. iOS:
-approximately 45–49 MB compressed and 126–135 MB unpacked **per slice**, because there is no
-shared library there — five of fiona's eight extensions each carry a complete copy of GDAL.
+Android: 0.84–0.96 MB of compressed wheel and 1.8–2.6 MB unpacked per ABI, on top of roughly
+21–23 MB of shared native libraries per ABI that come with GDAL. iOS: 45.6–50.2 MB
+compressed and 128–137 MB unpacked **per slice**, because there is no shared library there —
+five of fiona's eight extensions each carry a complete copy of GDAL, at about 25 MB apiece.
 Plain `import fiona` maps seven of the eight, about 2 MB of native code on Android arm64-v8a
 against about 102 MB on the iOS device slice: **50× the bytes for the same function**, before
 you touch a file.
@@ -232,36 +237,25 @@ expected here and stops nothing.
 
 ### iOS
 
-**`fiona.open` cannot reach a vector driver, and the driver list will tell you otherwise.**
+**Every extension carries its own GDAL, so configuration does not cross between them.**
 There is no shared GDAL on iOS, so the link pulls a full copy — global driver table included
 — into five of fiona's eight extensions, and every image is two-level namespaced, so none of
-them can see another's copy. `fiona._env` defines *and calls* all eleven registration entry
-points. `fiona.ogrext`, which is where `fiona.open` resolves a driver name, defines its own
-`GDALGetDriverByName` and calls no registration function that fiona can reach. On Android
-those are one library and the distinction is invisible; here they are separate tables, and
-the one `fiona.open` reads stays empty.
+them can see another's copy. `fiona._env` defines and calls all eleven registration entry
+points; `ogrext`, where `fiona.open` resolves a driver name, is a different table.
+`ios-driver-registry.patch` is what populates it, and `_geometry` and `_transform` with it,
+so reads and writes work — a GeoJSON round trip runs on an iPhone simulator.
 
-The symptom, on an iPhone 16 simulator: `fiona.open(path, "w", driver="GeoJSON", ...)`
-raises `FionaNullPointerError: NULL pointer error` out of
-`exc_wrap_pointer(GDALGetDriverByName(driver_c))`, while the same screen reports
-`driver_count()` 17 and six names from `Env().drivers()`, exactly as Android does. There is
-no app-side fix: `ogrext` exposes no registration entry point Python can call, and an
-explicit `fiona.Env()` only registers into `_env` again.
+What the patch does not do is merge the copies. An explicit
+[`fiona.Env()`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.Env) registers into
+`_env`'s GDAL, while the I/O happens in `ogrext`'s, so treat `Env` on iOS as describing the
+registry it queries rather than the dataset you are about to open, and pass options through
+`fiona.open(...)`, which reaches the instance doing the work. Android has one shared
+`libgdal.so` and none of this applies.
 
-**Use [`gdal`](../gdal)'s `osgeo.ogr` instead.** Its registration and its lookups share one
-image: `PyInit__ogr` in the shipped iOS `_ogr` extension *calls* `OGRRegisterAll`, which is
-exactly what `ogrext` does not do. Treat it as the structurally sound bet rather than a
-settled one — what has been measured on an iPhone 16 simulator, on 2026-08-25, is
-`osgeo.gdal` writing and re-reading a 512×512 float32 GeoTIFF with 0 of 262,144 elements
-differing and passing the band through `_gdal_array`, `_osr` and `_ogr`. That covers the raster
-half and the vector re-read; it does not cover EPSG codes, which fail there for the same
-missing `proj.db` as here. It is not free
-either: `osgeo/__init__.py` pulls in `_gdal` and `osgeo/ogr.py` pulls in `osr`, so the three
-iOS extensions together are about 77 MB, and `gdal` also has to go under the platform tables
-— for a different reason than fiona's, since upstream publishes no desktop wheel at all.
-
-`fiona.transform` does import and reproject here — and maps another complete GDAL to do
-it, which is the single most expensive line an iOS app can write against this wheel.
+`fiona.transform` is the line to think twice about: it is the one extension `import fiona`
+does not already load, and reaching it maps another complete GDAL — about 25 MB of resident
+image for a coordinate conversion. If an app transforms points more than incidentally,
+[`pyproj`](../pyproj) does the same job against PROJ alone.
 
 ### Other considerations
 
@@ -367,12 +361,22 @@ lands in `Requires-Dist` on both platforms. That is load-bearing on Android, whe
 extensions resolve `libgdal.so` by bare soname at load, and redundant but harmless on iOS,
 where the wheel's payload is a static archive plus headers that Flet's cleanup deletes.
 
-**The iOS driver split is the one that matters, and it is a linking artefact.** `GDAL_LIBS`
-names the whole static chain because `libgdal.a` leaks undefined symbols, and that is what
-drags a full GDAL — global driver table included — into five of the eight extensions.
-Aligning `flet-libgdal`'s iOS CMake with Android's would let `GDAL_LIBS` drop back to `gdal`
-and would rewrite the **iOS** section, the size figures and the Android-only recommendation
-at the top of this page in one go. It is the highest-value fix available to this recipe.
+**The iOS driver split is a linking artefact, and `ios-driver-registry.patch` only works
+around it.** `GDAL_LIBS` names the whole static chain because `libgdal.a` leaks undefined
+symbols, and that is what drags a full GDAL — global driver table included — into five of
+the eight extensions. The patch calls `GDALAllRegister()` in each extension that resolves a
+driver name, which makes the package work; it cannot merge the copies, so per-extension
+configuration stays as **iOS** describes it.
+
+Building `flet-libgdal` as a shared library for iOS is the real fix: it would retire the
+patch here and the identical ones in [`rasterio`](../rasterio) and [`pyogrio`](../pyogrio),
+close the configuration split, and cut a slice from ~128 MB unpacked to something near
+Android's. It is not new ground for this index — `flet-libzbar` and `flet-libmagic` already
+publish iOS wheels containing `Mach-O 64-bit dynamically linked shared library`, and
+`flet-libarrow` ships `@rpath` dylibs that pyarrow links against. The precedent that matches
+is that last one, a library *linked* by a C extension rather than loaded by ctypes, and it
+needed serious_python #223 to reconcile framework install names. Highest-value fix available
+to this recipe, and to the other two.
 
 ### Upgrade hazards
 
@@ -418,20 +422,16 @@ at the top of this page in one go. It is the highest-value fix available to this
 
 ### Coverage gaps
 
-- **The tests assert almost nothing about this build.** `test_supported_drivers` checks two
-  names in a dict `_filter_supported_drivers()` built from `_env`'s registry — exactly the
-  table that is *not* in question on iOS. Worth adding: an assertion over the exact six
-  names `fiona.Env().drivers()` returns, so a driver appearing is as red as one vanishing; a
-  write-read-compare through `fiona.open` with an explicit `driver=` and no CRS; and an
-  assertion that `CRS.from_epsg(4326)` raises `CRSError`.
-- **`test_write_read_geojson` records the wrong cause for its iOS skip.** It skips on the
-  grounds that OGR's GeoJSON writer calls PROJ to stamp WGS84 and fails with *Cannot find
-  proj.db*. Two things refute that: `ogrext.pyx` touches OSR only inside `if col_crs:`, so a
-  CRS-less write never enters PROJ there, and a desktop run with `GDAL_DATA`, `PROJ_DATA`
-  and `PROJ_LIB` all pointed at an empty directory wrote and read back both a GeoJSON and a
-  Shapefile intact. The exception class the skip names is right; the reason is not — it is
-  the driver-table split.
-- **Three claims on this page are untested.** The iOS *read* failure was never reached,
-  because there is nothing to read after a write that could not start; the `proj.db`-as-asset
-  lever has never been run on a device; and `osgeo.ogr` has not been shown writing a vector
-  layer on an iOS device — the measurement behind that recommendation is raster.
+- **`test_supported_drivers` asks the wrong table.** It checks two names in a dict
+  `_filter_supported_drivers()` builds from `_env`'s registry — exactly the table that is
+  *not* the one in question on iOS. `test_write_read_geojson` is what covers `ogrext`, and it
+  must keep writing with a proj-string CRS: an authority code fails at the CRS before it
+  reaches the driver, which is how the write looked impossible on iOS for so long. Worth
+  adding: an assertion over the exact six names `fiona.Env().drivers()` returns, so a driver
+  appearing is as red as one vanishing.
+- **Nothing covers whether an `Env()` option reaches `ogrext` on iOS.** The limit stated
+  under **iOS** follows from the linkage, not from a run.
+- **The `proj.db`-as-asset lever has never been run on a device.** It is also the claim most
+  likely to be wrong as written: [`pyproj`](../pyproj) carries eight separate PROJ copies on
+  iOS, so an API call that sets a data directory configures whichever copy it lands in, while
+  an environment variable is read by every copy. Prefer `PROJ_DATA` if anyone tries it.
