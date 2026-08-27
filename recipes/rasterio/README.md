@@ -23,30 +23,19 @@ rasterio needs **Python 3.12 or newer**, so the app's `requires-python` has to b
 `>=3.12`. Set it lower and `uv` fails the resolve for the lower splits rather than falling
 back to an older rasterio.
 
-**Treat this as Android-only. The iOS wheels build, install and import, and then cannot open
-a raster.** Registering drivers and doing the I/O happen in two different extension modules,
-and each iOS extension links its own copy of GDAL, so the driver table one of them fills in is
-invisible to the other. In a process that has just listed `GTiff` among its eleven registered
-drivers, `rasterio.open(path, "w", driver="GTiff")` raises
-`DriverRegistrationError: ('No such driver registered: %s', b'GTiff')`, and a windowed read of
-an existing file raises `SystemError: Unknown GDAL Error`; entering an explicit
-`rasterio.Env()` around the call changes nothing. Fixing it means relinking the iOS slices,
-not changing anything in your app. Measured 2026-08-19 with the
-[`elevation-tile`](examples/elevation-tile) example: the same app wrote and read back a
-1024×1024 GeoTIFF on an arm64 Android emulator with 0 of 1,048,576 pixels differing, and
-failed both operations on an iPhone simulator. If the project also builds for iOS, move
-rasterio out of `[project] dependencies` into
-[`[tool.flet.android] dependencies`](https://flet.dev/docs/publish/#app-dependencies) so the
-iOS app does not ship a package it cannot use, and guard the import.
+Both platforms open, read and write rasters; a 64×64 float32 GeoTIFF round trip runs on an
+iPhone simulator with no pixels differing. What differs is what it costs. On Android the
+GDAL behind rasterio is one shared `libgdal.so`; on iOS there is no shared GDAL at all, so
+each of the fifteen extensions links its own static copy and an iOS slice is 92–101 MB
+compressed and 271–289 MB unpacked, against 4.2–4.4 MB and 23–24 MB for an Android wheel.
+**Check that against the app's budget before adding the dependency** — it is the largest
+single package in this index, and **App size** has what to do about it.
 
-For raster I/O on iOS use [`gdal`](../gdal), GDAL's own SWIG bindings against the same
-libraries. It binds every native call to a single extension whose module init registers the
-drivers, so the split that breaks rasterio has nowhere to open. Measured on an iPhone 16
-simulator on 2026-08-25: [`gdal`](../gdal)'s own example wrote and re-read a 512×512 float32
-GeoTIFF through the GTiff driver with 0 of 262,144 elements differing, and handed the band on
-to `_gdal_array`, `_osr` and `_ogr` intact. Note the one thing that does not survive the move:
-an authority-named CRS still fails, since the chain ships no `proj.db` — spell CRSs as
-proj-strings.
+The other thing to know is that those static copies stay separate GDAL instances, so
+configuration does not cross between them: a `rasterio.Env()` entered in one extension is
+not seen by the one doing the I/O. **iOS** under *Things to know* has the detail. If an app
+only needs raster I/O and not rasterio's API, [`gdal`](../gdal)'s SWIG bindings do the same
+work from a single extension and a much smaller wheel.
 
 ## Examples
 
@@ -221,13 +210,14 @@ app does not need every ABI, and leave Flet's default
 20 MB of every unpacked wheel is Cython-generated `.c`/`.cpp` source that cleanup removes, and
 nothing in the package reads its own source, so compiling to `.pyc` is safe.
 
-iOS is in a different league and there is nothing to configure. Each wheel is about 95–105 MB
-compressed and about 260 MB unpacked after cleanup, because ten of the fifteen extensions carry
-their own static copy of GDAL. A build downloads three of those plus three `flet-libgdal`
-wheels of about 113 MB each, every one of which unpacks a half-gigabyte archive that is then
-deleted — expect a slow first build and plenty of free disk. Since those wheels cannot open a
-raster anyway, keeping rasterio out of the iOS dependency list is what actually saves the
-space.
+iOS is in a different league and there is nothing to configure. A slice is 92–101 MB
+compressed and 271–289 MB unpacked, or about 251–269 MB once cleanup removes the same 20 MB
+of generated C, because ten of the fifteen extensions carry a whole static GDAL and weigh
+24–25 MB apiece — `_version`, whose job is to report a version string, among them. A build
+downloads three of those wheels plus three `flet-libgdal` wheels of about 113 MB each, every
+one of which unpacks a half-gigabyte archive that is then deleted, so expect a slow first
+build and plenty of free disk. An `ipa` ships one slice. Where an app needs raster I/O rather
+than rasterio's API, [`gdal`](../gdal) does the same work from a single extension.
 
 ### Other considerations
 
@@ -301,6 +291,17 @@ above were established — and validate on a device or emulator before shipping.
   does — always shows the computed figure. Quote which one you mean, and do not assert a
   tolerance tighter than 1e-11 without knowing whether a sidecar was there.
 
+- **On iOS each extension carries its own GDAL, so configuration does not cross between
+  them.** No `flet-lib*` on this index ships a shared `libgdal` for iOS, so the link pulls a
+  static copy into each of the fifteen extensions, and each copy has its own driver registry
+  and its own configuration. The registries are populated in every module that resolves a
+  driver name, which is what makes reads, writes and `rasterio.shutil` work there. Options do
+  not follow: a [`rasterio.Env()`](https://rasterio.readthedocs.io/en/stable/api/rasterio.env.html#rasterio.env.Env)
+  entered around a call sets them in `_env`'s GDAL while the I/O happens in `_io`'s. Pass
+  creation and open options through `rasterio.open(...)`, which reaches the instance doing the
+  work, and read `Env` on iOS as describing the registry it queries rather than the dataset you
+  are about to touch. Android has one shared `libgdal.so`, and none of this applies.
+
 - **GEOS is not compiled in**, so OGR geometry predicates and operations are unavailable. Not a
   mobile-only limitation: rasterio's own PyPI wheels report `__geos_version__` as `'0.0.0'`
   too, and [`rasterio.features`](https://rasterio.readthedocs.io/en/stable/api/rasterio.features.html)
@@ -344,12 +345,23 @@ against 3,356,840 on Android arm64-v8a. The symbol tables say what that costs: o
 `_io`, `_base` and `_features` each *define* `GDALRegister_GTiff` and import it from nobody, so
 each carries its own copy of GDAL's global driver table, while on Android `_env` imports
 `GDALAllRegister` as an undefined symbol resolved at load. `rasterio.Env()` registers into
-`_env`; `rasterio.open` resolves the name in `_io`. One table on Android, ten on iOS — that is
-the Install warning, and it is why an explicit `Env()` does not help.
+`_env`; `rasterio.open` resolves the name in `_base` and `_io`. One table on Android, ten on
+iOS, which is what `ios-driver-registry.patch` exists to populate and why an explicit `Env()`
+never helped.
+
+**Find the modules that need it in the generated C, not in the linked binary.** A static GDAL
+puts roughly 41 `GDALGetDriverByName` and 121 `GDALOpen` call sites inside *every* iOS
+extension, `crs` and `_version` included, and every one of them also *defines* the
+registration symbols — so neither `nm` nor a raw `otool -tV` count separates rasterio's own
+lookups from GDAL's internals. Grepping `rasterio/*.c` in an Android wheel does: `_base`, `_io`
+and `shutil` call `GDALGetDriverByName` in their own code, and no other module does. Build 12
+patched the first two and shipped with `shutil` still unregistered, which is a quiet failure
+rather than a loud one — `rasterio.shutil.exists()` identifies a format by asking every
+registered driver, and asking none of them returns False rather than raising.
 
 `GDAL_LIBS` solves a *load* failure, not that *table* split: naming GDAL's static dependency
 chain stops dyld aborting on an unresolved `_geod_init` at import and does nothing about the
-registries. All fifteen iOS extensions are `MH_DYLIB`, so forge's `MH_BUNDLE` conversion has
+registries, which is why there are two patches. All fifteen iOS extensions are `MH_DYLIB`, so forge's `MH_BUNDLE` conversion has
 nothing to do, and `otool -L` on each lists only its own install name,
 `@rpath/Python.framework/Python`, `/usr/lib/libsqlite3.dylib`, `/usr/lib/libz.1.dylib` and
 `/usr/lib/libSystem.B.dylib`, plus `/usr/lib/libc++.1.dylib` on the same three that need
@@ -406,15 +418,19 @@ a `**/*.so` glob and drops every non-library file.
 
 ### Coverage gaps
 
-- **`tests/test_rasterio.py` asserts far less than it appears to.** `test_gdal_version` is a
-  genuine canary for the `GDAL_LIBS` chain. `test_drivers_listed` is not: `is_blacklisted` is
-  `return mode in blacklist.get(name, ())`, a pure-Python dict lookup with no `@ensure_env`
-  decorator, so only the *import* of `rasterio.drivers` touches native code and the registry
-  itself is untested. **The suite therefore passes on iOS while no raster can be opened
-  there.** Replace it with an assertion over `rasterio.Env().drivers()` inside its context —
-  the exact eleven keys, so a driver appearing is as red as one vanishing — a
-  write-read-compare of a real GeoTIFF, and an assertion that `CRS.from_epsg(4326)` raises
+- **Two of the four tests assert less than they appear to.** `test_gdal_version` is a genuine
+  canary for the `GDAL_LIBS` chain. `test_drivers_listed` is not: `is_blacklisted` is `return
+  mode in blacklist.get(name, ())`, a pure-Python dict lookup with no `@ensure_env` decorator,
+  so only the *import* of `rasterio.drivers` touches native code and the registry itself goes
+  untested. Those two passed on iOS throughout the period no raster could be opened there,
+  which is the whole argument for `test_geotiff_round_trip` and
+  `test_shutil_sees_and_copies_a_dataset` beside them: one covers `_base` and `_io`, the other
+  `shutil`, and between them every module that resolves a driver name. Worth adding still: an
+  assertion over `rasterio.Env().drivers()` inside its context, naming the exact eleven keys so
+  a driver appearing is as red as one vanishing, and one that `CRS.from_epsg(4326)` raises
   `CRSError`.
+- **Nothing covers whether an `Env()` option reaches the extension doing the I/O on iOS.** The
+  claim under **Things to know** that it does not follows from the linkage, not from a run.
 - **The threading results record no platform.** Nothing here says where the SIGBUS runs were
   made, nothing in CI exercises concurrency, and the example is written to avoid it. Say where
   when you re-run them.
