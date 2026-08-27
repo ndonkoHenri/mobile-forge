@@ -49,8 +49,9 @@ about:
   # all. Moving the embedding here is what makes it declarable.
   #
   # MPL-2.0 is the one with teeth: libpsl compiles in the Public Suffix List
-  # data. Same shape as flet-libjq bundling oniguruma and flet-libpsl bundling
-  # the Chromium DAFSA notice.
+  # data. The per-platform split follows flet-libomp; the bundling of a
+  # compiled-in dependency's notice follows flet-libjq (oniguruma) and
+  # flet-libpsl (the Chromium DAFSA sources).
 # {% if sdk in ['iphoneos', 'iphonesimulator'] %}
   license_file:
     - COPYING
