@@ -20,11 +20,11 @@ build:
   # never needed a driver-registry patch -- its SWIG _gdal registers and looks
   # up in one image -- but it links the dylib like every other consumer, so it
   # needs the same preload shim and the same headerpad.
-  number: 3
   # 3 rebuilds against flet-libgdal build 4, whose libgdal.dylib links the
   # shared libproj instead of absorbing it -- so this package, the other GDAL
   # consumers and pyproj all resolve one PROJ. The preload shim loads libproj
   # before libgdal, in dependency order.
+  number: 3
   script_env:
     GDAL_VERSION: 3.13.1
     GDAL_PREFIX: '{platlib}/opt'

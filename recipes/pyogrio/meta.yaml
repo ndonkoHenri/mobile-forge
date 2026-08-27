@@ -12,11 +12,11 @@ build:
   # what replaces it is a preload shim, because the extensions link the dylib
   # through @rpath and nothing on their rpath resolves it once flet has
   # relocated them into frameworks.
-  number: 4
   # 4 rebuilds against flet-libgdal build 4, whose libgdal.dylib links the
   # shared libproj instead of absorbing it -- so this package, the other GDAL
   # consumers and pyproj all resolve one PROJ. The preload shim loads libproj
   # before libgdal, in dependency order.
+  number: 4
   script_env:
     GDAL_VERSION: 3.13.1
     # pyogrio reads GDAL_LIBRARY_PATH (one directory). fiona and rasterio read
