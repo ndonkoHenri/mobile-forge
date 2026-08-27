@@ -1094,7 +1094,16 @@ class SimplePackageBuilder(Builder):
     def source_archive_path(self) -> Path:
         url = self.download_source_url()
         filename = url.split("/")[-1]
-        return Path.cwd() / "downloads" / filename
+        # Namespaced by recipe, because an upstream archive is named after the
+        # PROJECT while the recipe may not be. flet-libgdal downloads GDAL's
+        # release tarball, `gdal-<version>.tar.gz` -- byte-for-byte the name
+        # PythonPackageBuilder derives for the separate `gdal` recipe (the SWIG
+        # bindings, from PyPI). Sharing one downloads/ directory, whichever built
+        # first won, and the other silently unpacked the wrong tree: `gdal` then
+        # failed with "File to patch: No file found" because it was looking at
+        # GDAL's C++ source, which has no top-level setup.py. CI hits this too,
+        # since it prebuilds flet-libgdal into the same workspace.
+        return Path.cwd() / "downloads" / self.package.name / filename
 
     @property
     def build_path(self) -> Path:
