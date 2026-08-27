@@ -117,8 +117,19 @@ point
 at the directory holding it:
 
 ```python
-pyproj.datadir.set_data_dir(os.path.join(os.getenv("FLET_ASSETS_DIR", "assets"), "proj"))
+proj_dir = os.path.join(os.getenv("FLET_ASSETS_DIR", "assets"), "proj")
+os.environ["PROJ_DATA"] = proj_dir        # before `import pyproj`; reaches every copy
+pyproj.datadir.set_data_dir(proj_dir)     # after it
 ```
+
+**Set the environment variable as well as calling `set_data_dir`, and on iOS treat the
+variable as the one that counts.** `flet-libproj` is a static archive there, so PROJ is linked
+into each pyproj extension separately: eight of them are 9.3–9.7 MB and carry their own copy,
+against 202 KB for `_geod`, which does not. An environment variable crosses that, because every
+copy reads the same process environment; an API call configures whichever copy it lands in, and
+which copies `set_data_dir` reaches on iOS has not been measured. Android has one shared
+`libproj.so` and one instance, so either works there. Same split as the driver registry in
+[`rasterio`](../rasterio), [`fiona`](../fiona) and [`pyogrio`](../pyogrio).
 
 Take it from the same-version PyPI wheel, whose macOS arm64 build carries
 `pyproj/proj_dir/share/proj` as 16 files totalling about 9.4 MB. **`proj.db` on its own — about
@@ -445,3 +456,14 @@ behaviour red instead of silent.
 The grid-downgrade figures are the other gap: they were measured on a desktop PROJ 9.5.1 with a
 downloaded grid, and no device has run them, because neither the wheel nor the example ships
 `proj.db` or a grid file.
+
+**Which copies `set_data_dir` reaches on iOS is a third**, and the one to settle first if
+anyone ships a real database. Eight extensions carry their own PROJ, read from the published
+iOS wheel — `nm -a` finds 126 local `proj_*` text symbols and a `"proj.db"` string in each of
+`_transformer`, `_context` and `database` alone — so an API call cannot be assumed to configure
+the copy that runs a transform. A desktop cannot answer it: pyproj's bundled `proj_dir` wins
+over both mechanisms there, and `set_data_dir` against an empty stub only warns *pyproj unable
+to set PROJ database path* and then resolves EPSG codes from the bundled database anyway. The
+device test that would answer it plants an empty `proj.db`, calls `set_data_dir` **without**
+setting `PROJ_DATA`, and reads which error a `CRS.from_epsg` raises — PROJ's own *Cannot find
+proj.db* means the call never reached that copy, while a SQLite *no such table* means it did.
