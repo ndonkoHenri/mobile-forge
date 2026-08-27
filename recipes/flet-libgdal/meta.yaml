@@ -8,13 +8,25 @@ source:
   url: https://github.com/OSGeo/gdal/releases/download/v{{ version }}/gdal-{{ version }}.tar.gz
 
 build:
-  number: 2
+  # 3 builds iOS SHARED (see build.sh). A static libgdal is copied into every
+  # extension that links it, so each gets its own driver registry -- the bug
+  # rasterio, pyogrio and fiona each carry ios-driver-registry.patch for.
+  number: 3
 
 requirements:
   build:
     - cmake
   host:
     - flet-libproj 9.5.0
+# {% if sdk in ['iphoneos', 'iphonesimulator'] %}
+    # Only needed to LINK the shared library. libproj.a calls into libtiff
+    # (GTiff grids), libcurl (network grids) and sqlite3 (proj.db); under a
+    # static libgdal those stayed unresolved and each consumer's extension link
+    # supplied them through GDAL_LIBS. A real dylib has to resolve them itself,
+    # and libcurl is built --with-openssl. libtiff, libcurl and libpsl arrive
+    # transitively via flet-libproj; openssl does not, so name it.
+    - openssl >=3.0.15
+# {% endif %}
 
 patches:
   - mobile.patch
