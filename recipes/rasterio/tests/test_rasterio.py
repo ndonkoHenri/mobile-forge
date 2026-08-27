@@ -69,3 +69,37 @@ def test_geotiff_round_trip(tmp_path):
 
     assert read_back.dtype == data.dtype
     assert int((read_back != data).sum()) == 0, "pixels differ after a round trip"
+
+
+def test_shutil_sees_and_copies_a_dataset(tmp_path):
+    """`rasterio.shutil` resolves driver names in its own module — cover it too.
+
+    `_base`, `_io` and `shutil` are the three modules whose own code calls
+    `GDALGetDriverByName`, so under a static libgdal each needs its registry
+    populated. `test_geotiff_round_trip` covers the first two and stops there.
+
+    `exists` is the interesting half. It identifies a format by asking every
+    registered driver, and asking none of them is not an error — so on an
+    unregistered `shutil` it reports False for a file it just failed to open,
+    and nothing raises. Assert the True, or the bug reads as a normal answer.
+    """
+    import numpy as np
+    import rasterio
+    import rasterio.shutil
+    from rasterio.transform import from_origin
+
+    source = tmp_path / "source.tif"
+    with rasterio.open(
+        source, "w", driver="GTiff", height=8, width=8, count=1,
+        dtype="uint8", crs="+proj=latlong", transform=from_origin(0, 0, 1, 1),
+    ) as dst:
+        dst.write(np.full((8, 8), 7, dtype="uint8"), 1)
+
+    assert rasterio.shutil.exists(str(source)), "a dataset just written reads as absent"
+
+    copied = tmp_path / "copied.tif"
+    rasterio.shutil.copy(str(source), str(copied), driver="GTiff")
+    assert rasterio.shutil.exists(str(copied))
+
+    with rasterio.open(copied) as src:
+        assert int((src.read(1) != 7).sum()) == 0, "pixels differ after a copy"

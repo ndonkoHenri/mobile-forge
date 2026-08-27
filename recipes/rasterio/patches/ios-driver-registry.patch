@@ -16,6 +16,12 @@ raised in the same process that has just listed GTiff among its registered
 drivers — because the listing came from `_env`'s registry and the lookup went
 to `_base`'s.
 
+`rasterio.shutil` is the third: `copy` and `copyfiles` resolve a driver name,
+and `exists` opens a dataset. That one fails quietly rather than loudly --
+identifying a format means asking every registered driver, and asking none of
+them is not an error, so `rasterio.shutil.exists(path)` returns False for a
+file that is there.
+
 Counting call sites rather than definitions makes it unambiguous; every one of
 these extensions *defines* the registration symbols, which is why `nm` alone
 misleads. `otool -tV`, iOS arm64:
@@ -24,6 +30,13 @@ misleads. `otool -tV`, iOS arm64:
     rasterio  _env    GDALAllRegister x1, OGRRegisterAll x1, GDALRegister_GTiff x1
     rasterio  _io     none
     rasterio  _base   none
+    rasterio  shutil  none
+
+Read those counts from the *generated C*, not the linked binary: a static GDAL
+puts ~41 `GDALGetDriverByName` and ~121 `GDALOpen` call sites inside every
+extension, `crs` and `_version` included, and they are GDAL's own. Grepping
+`rasterio/*.c` in an Android wheel names the three modules whose own code does
+a lookup -- `_base`, `_io`, `shutil` -- and no others.
 
 `osgeo.gdal` escapes the bug for exactly this reason: its `_ogr` registers and
 does the work in one extension.
@@ -123,7 +136,22 @@ Only in rasterio-1.5.0/rasterio: rio
 Only in rasterio-1.5.0/rasterio: rpc.py
 Only in rasterio-1.5.0/rasterio: sample.py
 Only in rasterio-1.5.0/rasterio: session.py
-Only in rasterio-1.5.0/rasterio: shutil.pyx
+diff -ru orig/rasterio/shutil.pyx rasterio-1.5.0/rasterio/shutil.pyx
+--- a/rasterio/shutil.pyx	2026-08-25 22:54:38
++++ b/rasterio/shutil.pyx	2026-08-25 22:54:10
+@@ -13,6 +13,12 @@
+ from rasterio.errors import DriverRegistrationError, RasterioIOError
+ from rasterio._path import _parse_path
+ 
++
++# Same reason as _base.pyx. `copy` and `copyfiles` resolve a driver name here,
++# and `exists` opens a dataset, which identifies the format by asking every
++# registered driver -- with an empty registry that does not raise, it just
++# reports False for a file that is there. Idempotent.
++GDALAllRegister()
+ 
+ log = logging.getLogger(__name__)
+ 
 Only in rasterio-1.5.0/rasterio: stack.py
 Only in rasterio-1.5.0/rasterio: tools.py
 Only in rasterio-1.5.0/rasterio: transform.py
