@@ -41,9 +41,7 @@ build:
     # `@rpath/opt.lib.libgdal.framework/opt.lib.libgdal`, and setuptools links
     # with no padding, so install_name_tool fails, the relocation pass aborts,
     # and `flet build` still exits 0 having shipped an app with no
-    # site-packages. No recipe on this branch sets it yet -- the precedent is
-    # the `av` recipe on the unmerged `pyav` branch, whose 49 extensions each
-    # carry seven such refs. pyarrow gets away without it on slack alone.
+    # site-packages.
     LDFLAGS: '-Wl,-headerpad_max_install_names'
 # {% endif %}
 

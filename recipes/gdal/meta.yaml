@@ -35,8 +35,7 @@ build:
     # a defect that must fail at link, not at dlopen on a device. The headerpad
     # is required because serious_python rewrites the extension's dependency
     # from `@rpath/libgdal.dylib` to the much longer framework path, and
-    # setuptools links with no padding. Cheap insurance: the failure is silent
-    # (`flet build` still exits 0) and ships an app with no site-packages.
+    # setuptools links with no padding.
     LDFLAGS: '-Wl,-headerpad_max_install_names'
 # {% endif %}
 

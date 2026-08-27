@@ -1908,8 +1908,56 @@ assert the `True`.
 
 **Limit:** this makes the package usable, not correct. The copies stay separate
 library instances, so configuration set through one extension (`rasterio.Env()`,
-`pyogrio.set_gdal_config_options()`) still does not reach another. The complete fix
-is a SHARED `flet-lib*` for iOS.
+`pyogrio.set_gdal_config_options()`) still does not reach another.
+
+**THE COMPLETE FIX — build the `flet-lib*` SHARED for iOS.** Done for
+`flet-libgdal` (build 3, 2026-08-27) and verified on device for all four
+consumers; it retires the per-extension registration patches outright. Recipe:
+
+1. **`-DBUILD_SHARED_LIBS=ON`** in the iOS branch. One line, and the rest is what
+   it exposes.
+2. **DE-VERSION the dylib.** CMake installs `libX.<soversion>.dylib` plus two
+   symlinks; serious_python's framework relocation globs `libX.*.dylib` AND
+   `libX.dylib`, matches all three, and `lipo -create` dies "duplicate
+   architecture" — after which the SIMULATOR framework is silently never built
+   while the device slice still works. Collapse to one unversioned file and
+   `install_name_tool -id @rpath/libX.dylib`.
+3. **`.dylib`, never `.so`, for a LINKED library.** `create_xcframework_from_dylibs`
+   pre-sets the install-id when the extension is `so`, so
+   `reconcile_framework_install_names`' `[ "$oldid" != "$newid" ]` guard skips it,
+   the consumer's `LC_LOAD_DYLIB` is never rewritten, and the app dies at launch.
+   (`.so` is fine for a ctypes-LOADED lib — flet-libmagic/zbar/pq — because dyld
+   never sees an `@rpath` load command.)
+4. **The dylib must resolve its OWN dependency tree.** Under static, undefined
+   symbols were deferred to each consumer's extension link — which is what a long
+   `GDAL_LIBS`-style chain in the consumers pays for. A real dylib settles it once,
+   so put those libraries on the library's link line. Do NOT paper over it with
+   `-undefined dynamic_lookup`: that turns a link error into a dlopen crash and
+   puts the transitive copies back in every extension.
+5. **Consumers:** collapse the lib chain to the one library, DELETE
+   `-undefined dynamic_lookup`, and ADD `-Wl,-headerpad_max_install_names` —
+   serious_python rewrites each extension's dep from `@rpath/libX.dylib` to the
+   much longer `@rpath/opt.lib.libX.framework/opt.lib.libX`, setuptools links with
+   no padding, and on failure `flet build` STILL EXITS 0 having shipped an app with
+   no site-packages (reads on device as a bare `ModuleNotFoundError`).
+6. **Consumers need a ctypes preload shim** in `__init__.py`: flet relocates each
+   extension into its own framework while the dylib stays a plain file in
+   `opt/lib`, and nothing on a relocated extension's rpath resolves it, so load it
+   `RTLD_GLOBAL` first (with a `<name>.fwork` marker fallback). Precedents: `av`
+   (49 extensions, on the `pyav` branch), `pyarrow`, `pymupdf`.
+
+**Verify:** `file` → `Mach-O … dynamically linked shared library`; `otool -D` →
+`@rpath/libX.dylib`; `otool -L` on the lib → system libraries only; and on every
+consumer extension `nm -a <ext> | grep " [tT] _<RegisterFn>"` must be EMPTY while
+`otool -L` names `@rpath/libX.dylib`. A definition means a static lib crept back
+in and the registry is split again.
+
+**Watch for a downloads/ collision** when the library recipe and a Python-binding
+recipe wrap the same upstream project: a build.sh recipe's archive is named after
+the PROJECT (`gdal-<ver>.tar.gz` for `flet-libgdal`), which can equal the name
+PythonPackageBuilder derives for the bindings recipe (`gdal`). Fixed in forge by
+namespacing build.sh downloads per recipe; the tell is a patch failing with
+"File to patch: No file found" against a source tree that looks wrong.
 
 **FIRST decide whether a split is even a defect — most are not.** A duplicated
 static lib costs bytes; it costs *correctness* only when the API depends on state
