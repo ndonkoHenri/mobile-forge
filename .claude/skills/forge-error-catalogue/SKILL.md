@@ -126,7 +126,15 @@ instead of re-deriving it.
   `libssl.so.3`/`libcrypto`/`libsqlite` not found, import-name errors, old version
   loaded, **lazy_loader "non-existent stub" (serious_python strips `*.pyi`)**,
   **hidden runtime deps** (keras→scipy; device-emulating venv method),
-  **insightface `root=` PermissionError**, and **iOS app crashes at launch with a
+  **insightface `root=` PermissionError**, **iOS split registries — a STATIC
+  `flet-lib*` is linked into EVERY extension, so each gets its own copy of the
+  library's process globals and the module that registers is not the one that looks
+  up** ("No such driver registered" / "Could not obtain driver" / a silently wrong
+  `False`; fix = call the registration function at module scope in every extension
+  that does a lookup, idempotent so Android is unaffected — and find those modules
+  in the GENERATED C, since a static lib puts its own call sites in every extension
+  and defines the registration symbols everywhere, defeating `nm`), and **iOS app
+  crashes at launch with a
   0-byte `console.log` → `dyld: Library not loaded: @rpath/lib<X>.dylib` for a chain
   of interdependent bundled dylibs (pyarrow, llama)** → **serious_python #223**:
   reconcile framework install-ids + `@rpath` deps to the dotted-framework paths

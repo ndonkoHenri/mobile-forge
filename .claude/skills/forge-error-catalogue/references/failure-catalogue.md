@@ -1849,6 +1849,70 @@ model pack is `buffalo_sc` (det_500m + w600k_mbf, 15MB download).
 
 ---
 
+### iOS: a multi-extension package with a STATIC `flet-lib*` gets one registry/global per extension — "no such driver/plugin/codec registered", or a silently wrong answer
+
+**Shape:** the package imports, a listing call reports a healthy table, and the
+call that *uses* the table fails or lies. Seen as
+`DriverRegistrationError: ('No such driver registered: %s', b'GTiff')` (rasterio),
+`DataSourceError: Could not obtain driver: GeoJSON` (pyogrio) and
+`FionaNullPointerError` (fiona) — all on iOS only, all in a process that had just
+listed the thing it then could not find.
+
+**Cause:** `flet-libgdal` (and any `flet-lib*` that ships only a `.a` on iOS) is
+linked separately into EVERY extension of the consumer. Each copy carries its own
+copy of the library's process-global state — for GDAL, the driver registry. The
+module that registers and the module that looks up are different extensions, so
+one populates a table the other never sees. Android is immune: one shared
+`libgdal.so`, one registry.
+
+Generalises past GDAL to any static lib with a register-then-lookup global: codec
+tables, plugin registries, `atexit`-style handler lists, cached config.
+
+**Fix:** call the registration function at module scope in every extension that
+does a lookup. `GDALAllRegister()` is idempotent, so the same patch is a no-op on
+Android. See `recipes/{rasterio,pyogrio,fiona}/patches/ios-driver-registry.patch`.
+
+**Finding the modules that need it — do NOT read the linked binary.** A static
+GDAL puts ~41 `GDALGetDriverByName` and ~121 `GDALOpen` call sites inside every
+extension, including ones like `crs` and `_version` that obviously never open a
+dataset, and every extension also *defines* the registration symbols. So `nm`
+cannot distinguish, and a raw `otool -tV` count is mostly GDAL's own internals.
+Read the **generated C** instead — an Android wheel ships `<pkg>/*.c`:
+
+```bash
+unzip -o -q <pkg>-*-android_*.whl -d x
+for f in x/<pkg>/*.c x/<pkg>/*.cpp; do
+  printf "%-16s lookups=%s registers=%s\n" "$(basename $f)" \
+    "$(grep -c 'GDALGetDriverByName\|GDALOpenEx(\|GDALCreate(' $f)" \
+    "$(grep -c 'GDALAllRegister' $f)"
+done
+```
+
+Equivalently, grep the sdist's `.pyx` (declarations live in `.pxd`/`gdal.pxi`, so
+only `.pyx` hits are real calls). rasterio build 12 shipped with `_base` and `_io`
+patched and `shutil` missed this way.
+
+**Verify the fix in the shipped wheel** with call sites, not definitions:
+`otool -tV <ext>.so | grep -cE 'bl\s+.*_GDALAllRegister'` must be ≥1 for each
+module the grep above named.
+
+**Test for it, or CI will stay green.** The natural tests — `list_drivers()`,
+`__gdal_version__`, a driver count — all live in the module that registers, so
+they pass while every read and write on that platform is broken. A test has to
+write a file and read it back. Watch for two traps: (1) a write needs a CRS spelled
+as a proj-string, never `EPSG:4326`, since these chains ship no `proj.db` and the
+test would fail at the CRS before reaching the registry; (2) some entry points fail
+*quietly* — `rasterio.shutil.exists()` identifies a format by asking every
+registered driver, and asking none of them returns `False` rather than raising, so
+assert the `True`.
+
+**Limit:** this makes the package usable, not correct. The copies stay separate
+library instances, so configuration set through one extension (`rasterio.Env()`,
+`pyogrio.set_gdal_config_options()`) still does not reach another. The complete fix
+is a SHARED `flet-lib*` for iOS.
+
+---
+
 ## Recipe-tester app failures
 
 ### `ResolutionImpossible` — a package's `numpy` upper-cap can't be satisfied on a newer CPython
