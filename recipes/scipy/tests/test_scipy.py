@@ -184,3 +184,66 @@ def test_sobol_data_file_loads_from_the_zip():
 
     sample = qmc.Sobol(d=2, scramble=False).random(4)
     assert sample.shape == (4, 2), sample
+
+
+def test_ode_solver_lsoda():
+    """solve_ivp(method="LSODA") -> the _odepack extension, which nothing else reaches.
+
+    There is no `_lsoda` extension — LSODA is `from ._odepack import lsoda`,
+    reached through `scipy.integrate._ode`. Check the module list before
+    retargeting this at a name that sounds right.
+
+    `test_integrate` covers QUADPACK via `quad`, a different compiled unit. On
+    iOS each of scipy's OpenBLAS-carrying extensions absorbs its own copy of
+    the library, so "scipy works" is never per-extension evidence — thirteen
+    extensions carry one and the suite reached three. Exponential decay has a
+    closed form to check the answer against.
+    """
+    import numpy as np
+    from scipy.integrate import solve_ivp
+
+    result = solve_ivp(lambda t, y: -0.5 * y, (0.0, 4.0), [2.0],
+                       method="LSODA", rtol=1e-8, atol=1e-10)
+    assert result.success, result.message
+    assert np.allclose(result.y[0, -1], 2.0 * np.exp(-0.5 * 4.0), rtol=1e-5)
+
+
+def test_optimize_lbfgsb_and_slsqp():
+    """L-BFGS-B and SLSQP -> the _lbfgsb and _slsqplib extensions.
+
+    `test_optimize` uses BFGS, which is pure Python over numpy and touches
+    neither. Both minimise the same quadratic so the expected answer is shared;
+    SLSQP additionally carries a constraint, which is its own code path.
+    """
+    import numpy as np
+    from scipy.optimize import minimize
+
+    def quadratic(v):
+        return (v[0] - 1.0) ** 2 + (v[1] - 2.5) ** 2
+
+    bounded = minimize(quadratic, [0.0, 0.0], method="L-BFGS-B")
+    assert bounded.success, bounded.message
+    assert np.allclose(bounded.x, [1.0, 2.5], atol=1e-5)
+
+    constrained = minimize(
+        quadratic, [0.0, 0.0], method="SLSQP",
+        constraints=[{"type": "ineq", "fun": lambda v: 2.0 - v[0]}],
+    )
+    assert constrained.success, constrained.message
+    assert np.allclose(constrained.x, [1.0, 2.5], atol=1e-5)
+
+
+def test_sparse_eigsh_arpack():
+    """sparse.linalg.eigsh -> the ARPACK extension, another OpenBLAS carrier.
+
+    `test_sparse_spsolve` covers SuperLU; ARPACK is separate. A diagonal matrix
+    makes the eigenvalues exactly the diagonal, so the assertion needs no
+    tolerance argument about which eigenvector convention came back.
+    """
+    import numpy as np
+    from scipy.sparse import diags
+    from scipy.sparse.linalg import eigsh
+
+    matrix = diags(np.array([1.0, 2.0, 3.0, 4.0, 9.0]), format="csr")
+    values = eigsh(matrix, k=2, which="LM", return_eigenvectors=False)
+    assert np.allclose(np.sort(values), [4.0, 9.0], atol=1e-8)
