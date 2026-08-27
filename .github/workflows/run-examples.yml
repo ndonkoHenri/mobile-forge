@@ -38,6 +38,16 @@ on:
           Shard count per platform (empty = auto from a per-example time budget):
         required: false
         default: ""
+      checks:
+        description: |
+          L1/L2 content checks: gate (verdict-bearing), report (annotate only — soak mode), off:
+        required: false
+        type: choice
+        options:
+          - gate
+          - report
+          - "off"
+        default: "gate"
 
 # Pushes on a branch supersede each other; a dispatched sweep gets its own
 # group (keyed by run_id) so a trivial example push can't cancel hours of
@@ -156,6 +166,8 @@ jobs:
       - name: Run on Android emulator (API 28, x86_64)
         if: ${{ steps.build.outputs.has_bundles == 'true' }}
         uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
+        env:
+          EXAMPLE_CHECKS: ${{ inputs.checks || 'gate' }}
         with:
           # API 28 minimum — Flet's app shell needs it (see build-wheels-version.yml).
           api-level: 28
@@ -225,6 +237,8 @@ jobs:
       - name: Run on iOS Simulator
         if: ${{ steps.build.outputs.has_bundles == 'true' }}
         shell: bash
+        env:
+          EXAMPLE_CHECKS: ${{ inputs.checks || 'gate' }}
         run: .ci/run_examples_ios.sh
 
       - name: Upload results

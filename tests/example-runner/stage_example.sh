@@ -31,4 +31,8 @@ rm -rf "$DEST/build" "$DEST/.ruff_cache" "$DEST/src/__pycache__"
 # example in the same shard can never be read as this one's result.
 sed "s|__EXAMPLE_SLUG__|$SLUG|" "$SCRIPT_DIR/_ci_harness.py" > "$DEST/src/_ci_harness.py"
 
+# Bake the example's overrides table (expect/forbid/error_allow/...) so the
+# on-device checks worker has its rules; {} when the example has no entry.
+uv run --script "$REPO_ROOT/.ci/example_override.py" "$SLUG" --json > "$DEST/src/_ci_rules.json"
+
 echo "Staged $SLUG -> $DEST"

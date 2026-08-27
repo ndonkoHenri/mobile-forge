@@ -23,7 +23,9 @@ mkdir -p "$OUT_DIR/results" "$OUT_DIR/shots" "$OUT_DIR/logs" "$WORK"
 dev_install()    { run_with_timeout 180 adb install "$1" >/dev/null; }
 dev_uninstall()  { adb uninstall "$PKG" >/dev/null 2>&1 || true; }
 dev_launch()     { adb shell am start -n "$PKG/.MainActivity" >/dev/null; }
-dev_pull_log()   { adb pull "$REMOTE_LOG" "$1" >/dev/null 2>&1 || true; }
+dev_pull_log()     { adb pull "$REMOTE_LOG" "$1" >/dev/null 2>&1 || true; }
+dev_pull_verdict()  { adb pull "/data/data/$PKG/cache/_ci_verdict.json" "$1" >/dev/null 2>&1 || true; }
+dev_clear_verdict() { adb shell rm -f "/data/data/$PKG/cache/_ci_verdict.json" >/dev/null 2>&1 || true; }
 dev_screenshot() { adb exec-out screencap -p > "$1" 2>/dev/null || true; }
 dev_alive()      { [ -n "$(adb shell pidof "$PKG" 2>/dev/null | tr -d '[:space:]')" ]; }
 dev_foreground() {

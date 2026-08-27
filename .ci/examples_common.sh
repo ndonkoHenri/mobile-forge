@@ -6,6 +6,8 @@
 #   dev_launch             start the app
 #   dev_uninstall          remove the app + its data (must not fail the script)
 #   dev_pull_log <out>     copy the app's console.log to <out> (missing = ok)
+#   dev_pull_verdict <out> copy the app's _ci_verdict.json to <out> (missing = ok)
+#   dev_clear_verdict      delete a leftover on-device _ci_verdict.json (must not fail)
 #   dev_screenshot <out>   capture the screen to <out> (failure = ok, empty file)
 #   dev_alive              app process still exists
 #   dev_foreground         app is the foreground UI (android only; iOS = alive)
@@ -52,6 +54,9 @@ run_example_ladder() {  # <slug> <bundle>
         record_verdict "$slug" "$PLATFORM" INSTALL_FAIL "install failed or timed out"
         return 0
     fi
+    # An install over surviving app data (a silently-failed uninstall) could
+    # replay the previous example's sidecar; clear it before the app starts.
+    dev_clear_verdict
     if ! dev_launch; then
         record_verdict "$slug" "$PLATFORM" INSTALL_FAIL "launch failed"
         dev_uninstall
@@ -122,6 +127,62 @@ run_example_ladder() {  # <slug> <bundle>
         done
         [ -s "$shot" ] || dev_screenshot "$shot"
 
+        # L1/L2 content checks: wait for the harness's CHECKED sentinel, pull
+        # the _ci_verdict.json sidecar, validate (slug must match — a stale
+        # sidecar surviving a silently-failed uninstall must never be read as
+        # this example's result), classify. EXAMPLE_CHECKS: gate (default,
+        # verdict-bearing) | report (annotate only — the soak mode) | off.
+        case "${EXAMPLE_CHECKS:-gate}" in
+            (gate|report|off) ;;
+            (*) echo "::warning::unknown EXAMPLE_CHECKS='${EXAMPLE_CHECKS:-}' — treating as gate"
+                EXAMPLE_CHECKS=gate ;;
+        esac
+        checks_state=""; checks_detail=""
+        if [ "${EXAMPLE_CHECKS:-gate}" != "off" ]; then
+            # Wait budget follows the example's own verdict_timeout override —
+            # the worker's clock started at READY, so now+vt+slack over-waits
+            # slightly rather than truncating a slow example's checks.
+            vt="$(uv run --script "$CI_DIR/example_override.py" "$slug" verdict_timeout 90 2>/dev/null || true)"
+            case "$vt" in (*[!0-9]*|"") vt=90 ;; esac
+            cdeadline=$(( $(date +%s) + vt + 45 ))
+            while [ "$(date +%s)" -lt "$cdeadline" ]; do
+                dev_pull_log "$clog"
+                grep -qF ">>>>>>>>>> UI CHECKED $slug <<<<<<<<<<" "$clog" && break
+                dev_alive || break   # a dead app will never deliver — save the wait
+                sleep 2
+            done
+            vfile="$WORK/verdict.json"
+            rm -f "$vfile"
+            dev_pull_verdict "$vfile"
+            [ -s "$vfile" ] && cp "$vfile" "$OUT_DIR/logs/$f-verdict.json" 2>/dev/null || true
+            ok_val="$(jq -r .ok "$vfile" 2>/dev/null || true)"
+            slug_ok="$(jq -r --arg s "$slug" '.slug == $s' "$vfile" 2>/dev/null || true)"
+            if [ ! -s "$vfile" ] || [ "$slug_ok" != "true" ] \
+               || { [ "$ok_val" != "true" ] && [ "$ok_val" != "false" ]; }; then
+                checks_state=NO_CHECKS
+                checks_detail="checks verdict missing, stale or unreadable"
+            elif [ "$ok_val" = "false" ]; then
+                checks_detail="$(jq -r '[.failures[].detail] | join("; ") | .[0:300]' "$vfile" 2>/dev/null | tr '\t\n|' '   ' || true)"
+                if jq -e '[.failures[] | select(.rule=="error-text")] | length > 0' "$vfile" >/dev/null 2>&1; then
+                    checks_state=ERROR_TEXT
+                else
+                    checks_state=EXPECT_FAIL
+                fi
+            else
+                # Provenance: expect rules that never reached the device would
+                # pass vacuously (a future packaging change could eat the
+                # staged _ci_rules.json without any other symptom).
+                n_local="$(uv run --script "$CI_DIR/example_override.py" "$slug" --json 2>/dev/null | jq -r '(.expect // []) | length' 2>/dev/null || true)"
+                n_dev="$(jq -r '.rules.expect // 0' "$vfile" 2>/dev/null || true)"
+                case "$n_local" in (''|*[!0-9]*) n_local=0 ;; esac
+                case "$n_dev" in (''|*[!0-9]*) n_dev=0 ;; esac
+                if [ "$n_local" -gt 0 ] && [ "$n_dev" -eq 0 ]; then
+                    checks_state=NO_CHECKS
+                    checks_detail="expect rules never reached the device (staging/packaging gap)"
+                fi
+            fi
+        fi
+
         # A dead or backgrounded app leaves the launcher on screen — visually
         # rich and stable, so it must be caught before any pixel check; only a
         # live foreground app whose frame still equals the boot baseline is
@@ -136,8 +197,15 @@ run_example_ladder() {  # <slug> <bundle>
             verdict=BACKGROUNDED; detail="app not in the foreground at capture time"
         elif awk "BEGIN{exit !($r_final < 0.02)}"; then
             verdict=STUCK; detail="screen never changed from the boot frame after UI READY"
+        elif [ "${EXAMPLE_CHECKS:-gate}" = "gate" ] \
+             && { [ "$checks_state" = ERROR_TEXT ] || [ "$checks_state" = EXPECT_FAIL ]; }; then
+            verdict=$checks_state; detail="$checks_detail"
         elif grep -q "Traceback (most recent call last)" "$clog"; then
+            # A genuine post-READY traceback outranks NO_CHECKS: the missing
+            # sidecar is usually a CONSEQUENCE of the crash, not the story.
             verdict=CRASH; detail="traceback after UI READY (background worker?)"
+        elif [ "${EXAMPLE_CHECKS:-gate}" = "gate" ] && [ "$checks_state" = NO_CHECKS ]; then
+            verdict=NO_CHECKS; detail="$checks_detail"
         else
             rcb=0
             uv run --script "$CI_DIR/check_screenshot.py" blank "$shot" || rcb=$?
@@ -150,6 +218,12 @@ run_example_ladder() {  # <slug> <bundle>
             else
                 verdict=PASS; detail="still changing at the ${settle}s settle cap"
             fi
+        fi
+        # Soak mode: the checks outcome rides along in the detail column
+        # instead of bearing the verdict, so an ALL sweep measures the
+        # would-be failure surface without going red.
+        if [ "${EXAMPLE_CHECKS:-gate}" = "report" ] && [ -n "$checks_state" ]; then
+            detail="$detail [checks(report): $checks_state — $checks_detail]"
         fi
     else
         # Crash/timeout screens (flet's error card, a stuck boot) are worth

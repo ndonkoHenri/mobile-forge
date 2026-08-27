@@ -33,7 +33,9 @@ import read_meta  # noqa: E402  (reuse the renderer the build matrix uses)
 
 REPO = Path(__file__).resolve().parent.parent
 SMOKE_EXAMPLES = ["numpy/bell-curve"]
-PER_EXAMPLE_MINUTES = {"android": 8, "ios": 11}
+# Covers build + install/launch/settle + the checks wait (a failing example
+# can burn READY_TIMEOUT + settle + verdict wait before its verdict lands).
+PER_EXAMPLE_MINUTES = {"android": 9, "ios": 12}
 SHARD_BUDGET_MINUTES = 240
 MAX_SHARDS = {"android": 10, "ios": 8}
 BASE_MINUTES = 30  # toolchain download + device boot, paid once per shard

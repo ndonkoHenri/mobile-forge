@@ -29,12 +29,35 @@ The host (`.ci/run_examples_{android,ios}.sh` → `.ci/examples_common.sh`) then
 4. fails near-solid frames (`.ci/check_screenshot.py`: OS chrome cropped,
    colors quantized, dominant-color + distinct-color thresholds).
 
+After READY the harness also runs **content checks** from a worker thread: it
+dumps the visible control-tree text every 2s and, wait-until-satisfied (two
+consecutive passing dumps, or fail at `verdict_timeout`), enforces:
+
+- **L1 (universal)** — no visible text is *crash-shaped*: a
+  `Traceback (most recent call last)` line, a `SomeError:` /
+  `Some.Exception:` class rendering (the codebase's canonical
+  `f"{type(exc).__name__}: {exc}"` surface), "unhandled exception", or an
+  uppercase self-check `FAIL`/`FAILED`/`FAILURE` — unless an `error_allow`
+  regex in `overrides.toml` exempts the line. Deliberately not vocabulary
+  matching: healthy screens legitimately say "rms error" or "no exception".
+- **L2 (per-example)** — every `expect` regex matches, no `forbid` regex does.
+  These snippets are the example's checked-in baseline: they travel in the
+  same PR as the example, no golden files, no update workflow.
+
+The outcome is written atomically to `_ci_verdict.json` beside console.log
+and announced with a `UI CHECKED` sentinel; the driver classifies failures as
+`ERROR_TEXT` / `EXPECT_FAIL` (`NO_CHECKS` if the sidecar never appears).
+`EXAMPLE_CHECKS=report` (the workflow's `checks` input) records the outcome
+in the detail column without failing — the soak mode for calibrating
+allowlists across all examples before gating.
+
 Verdicts: `PASS`, `RESOLVE_FAIL` (pip couldn't resolve the pins for the
 mobile target — usually "recipe needs a republish"), `BUILD_FAIL`,
 `INSTALL_FAIL`, `TIMEOUT`, `CRASH`, `DIED`, `BACKGROUNDED`, `BLANK`,
-`NO_RESULT`, `INFRA`. Anything but PASS fails the shard; the report step and
-the run-level `example-gallery-*` artifact (self-contained HTML contact
-sheet) show verdict + screenshot per example.
+`STUCK`, `ERROR_TEXT`, `EXPECT_FAIL`, `NO_CHECKS`, `NO_RESULT`, `INFRA`.
+Anything but PASS fails the shard; the report step and the run-level
+`example-gallery-*` artifact (self-contained HTML contact sheet) show
+verdict + screenshot per example.
 
 ## Artifacts
 

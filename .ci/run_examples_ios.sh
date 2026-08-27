@@ -56,7 +56,17 @@ dev_launch() {
     APP_PID="${launch_out##*: }"
     REMOTE_LOG="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)/Library/Caches/console.log"
 }
-dev_pull_log()   { [ -n "$REMOTE_LOG" ] && [ -f "$REMOTE_LOG" ] && cp "$REMOTE_LOG" "$1" || true; }
+dev_pull_log()     { [ -n "$REMOTE_LOG" ] && [ -f "$REMOTE_LOG" ] && cp "$REMOTE_LOG" "$1" || true; }
+dev_pull_verdict() {
+    v="$(dirname "$REMOTE_LOG")/_ci_verdict.json"
+    [ -n "$REMOTE_LOG" ] && [ -f "$v" ] && cp "$v" "$1" || true
+}
+dev_clear_verdict() {
+    # Resolves the container itself: REMOTE_LOG is only set by dev_launch,
+    # and this runs between install and launch.
+    d="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data 2>/dev/null || true)"
+    [ -n "$d" ] && rm -f "$d/Library/Caches/_ci_verdict.json" 2>/dev/null || true
+}
 dev_screenshot() { xcrun simctl io "$UDID" screenshot "$1" >/dev/null 2>&1 || true; }
 dev_alive()      { [ -n "$APP_PID" ] && kill -0 "$APP_PID" 2>/dev/null; }
 dev_foreground() { dev_alive; }   # no cheap foreground probe on the sim

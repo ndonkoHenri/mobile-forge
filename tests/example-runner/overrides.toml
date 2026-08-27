@@ -1,6 +1,16 @@
 # Per-example CI overrides for run-examples.yml, keyed "<recipe>/<example>".
-#   skip = "<reason>"       — exclude from CI runs (reason surfaces in the detect summary)
-#   settle_seconds = <int>  — cap the post-READY screenshot-settle wait (default 60)
+#   skip = "<reason>"        — exclude from CI runs (reason surfaces in the detect summary)
+#   settle_seconds = <int>   — cap the post-READY screenshot-settle wait (default 60)
+#   verdict_timeout = <int>  — cap the on-device checks loop (default 90)
+#   expect = ["<regex>", …]  — must all match the settled visible text (L2)
+#   forbid = ["<regex>", …]  — none may match any visible line (L2)
+#   error_allow = ["<regex>", …] — lines matching these are exempt from the
+#                            global error-text gate (L1: crash-shaped text —
+#                            "Traceback (most recent call last)", "SomeError:",
+#                            unhandled exception, uppercase FAIL/FAILED/FAILURE)
 
 ["tiktoken/token-budget"]
 skip = "expects a pre-fetched vocab asset under src/ (see the example README); not committed"
+
+["numpy/bell-curve"]
+expect = ["numpy \\d+\\.", "measured", "predicted"]
