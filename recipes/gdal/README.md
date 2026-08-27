@@ -267,8 +267,7 @@ cleanup into the app; there is nothing to configure, but the machine does that t
 **Your desktop is not a preview of the device.** `flet run` resolves GDAL from PyPI or
 Homebrew — one shared libgdal, a full `proj.db`, and a registry of 214 drivers against the
 mobile build's eleven on the machine this page was written on. EPSG codes, PNG and `ZSTD` all
-work on your Mac and fail on the phone, and the single-table-versus-five-tables difference
-does not exist there at all. Validate on a device or simulator, and make the app render its
+work on your Mac and fail on the phone. Validate on a device or simulator, and make the app render its
 own exceptions on screen — an unhandled exception in a Flet handler produces
 `SESSION_CRASHED` and you lose the diagnosis.
 
@@ -327,22 +326,16 @@ preamble, and `meta.yaml` comments its `GDAL_LIBS` and version pin next to them.
 
 **Almost everything the consumer sections warn about is a `flet-libgdal` decision, not a gdal
 one.** The eleven-driver registry, the codec set, the missing `GDAL_DATA` and `proj.db`, the
-absent GEOS and libcurl and the iOS static-only link all come from that recipe and from
-`flet-libproj`. A `flet-libgdal` bump can invalidate most of this README without a line
-changing here.
+absent GEOS and libcurl all come from that recipe and from `flet-libproj`. A `flet-libgdal`
+bump can invalidate most of this README without a line changing here.
 
-**The iOS size is a linking artefact worth fixing at the source.** `meta.yaml`'s `GDAL_LIBS`
-names the whole static chain because `libgdal.a` (524,528,736 bytes) leaks undefined symbols;
-that is what drags a full GDAL into five of the six extensions and turns Android's 25,967,800
-bytes of native code into 126,305,872. Per extension on the iOS device slice: `_gdal`
-26,488,680, `_ogr` 25,678,176, `_gnm` 24,938,936, `_osr` 24,763,872, `_gdal_array`
-24,347,712, `_gdalconst` 88,496. Aligning `flet-libgdal`'s iOS cmake with Android's would let
-`GDAL_LIBS` drop back to `gdal` and would rewrite **Extension modules**, **App size** and the
-whole cross-extension question at once.
-
-`requirements.host`'s `openssl >=3.0.15` is a build-time-only input: `build.py` promotes only
-`flet-*` host requirements into `Requires-Dist`, so it never reaches a device, and it exists
-purely because `GDAL_LIBS` names `ssl` and `crypto`.
+**`GDAL_LIBS` is a single entry, and that is load-bearing.** `flet-libgdal` ships a shared
+`libgdal.dylib` on iOS which resolves proj, tiff, jpeg, curl, ssl, crypto and psl internally,
+so the six extensions link one image and share one driver registry. Naming that dependency
+chain here would link it again per extension, and a static `libgdal.a` would do the same —
+each extension absorbing its own GDAL and its own registry. `-undefined dynamic_lookup` stays
+off for the matching reason: an unresolved symbol against a real dylib is a defect that has
+to fail at link, not at `dlopen` on a device.
 
 ### Upgrade hazards
 
@@ -350,14 +343,12 @@ The version pin in `meta.yaml` is exact for a reason — the bindings hard-requi
 major.minor match with libgdal. Bump the two together and re-read the consumer claims off the
 built wheels.
 
-**The single-table property is why this package needs no iOS patch, and upstream can retire
-it silently.** `PyInit__gdal` calling `GDALAllRegister`, and `osgeo/gdal.py` containing no
-reference to `_ogr`, `_osr`, `_gnm`, `_gdal_array` or `_gdalconst`, are what keep the raster
-path inside one image. Upstream moving one function to a different SWIG module would split
-the driver registry the way it is split in `rasterio`, `pyogrio` and `fiona` — each of which
-carries an `ios-driver-registry.patch` to call `GDALAllRegister()` in every module that
-resolves a driver name — and it would do it with no build error. Those patches are the
-template if it happens here.
+**The registry is shared through `libgdal`, so no SWIG module needs to register on its own.**
+Confirm on a bump that no extension *defines* `GDALAllRegister` — `nm -a <ext> | grep
+" [tT] _GDALAllRegister"` must be empty for all six, while `otool -L` names
+`@rpath/libgdal.dylib` on each. A definition means the link picked up a static GDAL, which
+gives that extension a private registry and produces the failure that is hardest to read:
+a full driver listing beside an open that cannot find the driver it just listed.
 
 The import graph moves on any bindings release too: four-modules-on-import and
 six-after-`UseExceptions()` are upstream source behaviour, not ours.
