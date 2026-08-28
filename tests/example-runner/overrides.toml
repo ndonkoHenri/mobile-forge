@@ -64,7 +64,7 @@ error_allow = ["CRSError: "]
 error_allow = ["CRSError: The EPSG code is unknown"]
 
 ["regex/vs-re"]
-error_allow = ["PatternError: ", "TypeError: findall"]
+error_allow = ["^\\s*re\\s{2,}\\w+(Error|Exception): "]
 
 ["ujson/shape-bench"]
 error_allow = ["TypeError: ", "JSONDecodeError: "]
