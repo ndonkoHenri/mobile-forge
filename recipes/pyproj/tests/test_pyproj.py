@@ -59,7 +59,7 @@ def test_epsg_codes_resolve_where_proj_db_reached_the_device():
     import os
 
     from pyproj import CRS, Transformer
-    from pyproj.exceptions import CRSError
+    from pyproj.exceptions import CRSError, DataDirError
 
     # Control: a proj-string round trip, database or not.
     wgs84 = "+proj=longlat +datum=WGS84 +no_defs"
@@ -101,5 +101,12 @@ def test_epsg_codes_resolve_where_proj_db_reached_the_device():
         assert abs(easting - 500000.0) < 0.01, easting
         assert abs(northing - 6651411.19) < 0.5, northing
     else:
-        with pytest.raises(CRSError):
+        # Two different exceptions, depending on how thoroughly the database is
+        # missing. With a data directory that exists but holds no usable
+        # proj.db, the lookup fails and raises CRSError. With no data directory
+        # at all -- which is what a device gets from a flet-libproj that ships
+        # no database -- pyproj raises DataDirError from get_data_dir() first,
+        # before any CRS work happens. Accept either; the point is that an
+        # authority code does not silently return something wrong.
+        with pytest.raises((CRSError, DataDirError)):
             CRS.from_epsg(4326)
