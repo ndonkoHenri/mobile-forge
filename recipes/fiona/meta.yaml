@@ -42,6 +42,24 @@ build:
     LDFLAGS: '-Wl,-headerpad_max_install_names'
 # {% endif %}
 
+# pyproj is not a fiona dependency -- it is here so the tests can exercise the
+# one route PROJ's database has on Android. flet-libproj's opt/share/proj never
+# reaches Android site-packages, so the database travels inside pyproj instead,
+# and fiona's preload shim finds it there through find_spec. Without pyproj
+# installed the test asserts the other half: EPSG codes raise.
+test:
+  requires:
+    - pyproj
+
+# Extracting PYPROJ, not fiona: on Android the PROJ database only exists inside
+# pyproj's package, and a file inside Flet 0.86's sitepackages.zip is not a path
+# PROJ can open. This is app-level in a real project too -- extract_packages is
+# read from the app's pyproject, never inherited from a dependency's metadata --
+# so an app wanting EPSG codes on Android has to declare it. Said plainly in the
+# README's Coordinate systems section.
+extract_packages:
+  - pyproj
+
 patches:
   - mobile.patch
   - ios-libgdal-preload.patch

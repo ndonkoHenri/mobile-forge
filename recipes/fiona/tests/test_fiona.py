@@ -126,15 +126,18 @@ def test_epsg_codes_work_where_proj_db_reached_the_device():
 
     package = os.path.dirname(os.path.abspath(fiona.__file__))
     site_packages = os.path.dirname(package)
-    have_db = any(
-        os.path.exists(p)
-        for p in (
-            # where flet-libproj ships it on device
-            os.path.join(site_packages, "opt", "share", "proj", "proj.db"),
-            # where fiona's own PyPI wheel bundles one on a desktop
-            os.path.join(package, "proj_data", "proj.db"),
-        )
-    )
+    roots = [
+        # where flet-libproj ships it, and iOS can read it directly
+        os.path.join(site_packages, "opt", "share", "proj"),
+        # where fiona's own PyPI wheel bundles one on a desktop
+        os.path.join(package, "proj_data"),
+    ]
+    # Whatever the preload shim settled on -- on Android that is pyproj's
+    # extracted copy, which is the only route the database has there.
+    for var in ("PROJ_DATA", "PROJ_LIB"):
+        if os.environ.get(var):
+            roots.extend(os.environ[var].split(os.pathsep))
+    have_db = any(os.path.exists(os.path.join(r, "proj.db")) for r in roots)
 
     if have_db:
         # 15E is UTM zone 33's central meridian, so the easting is the 500000
