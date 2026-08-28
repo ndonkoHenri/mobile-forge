@@ -68,23 +68,38 @@ def test_epsg_codes_resolve_where_proj_db_reached_the_device():
     assert abs(x - 484409.0) < 5000, x
     assert abs(y - 6593200.0) < 5000, y
 
-    # Ask pyproj where PROJ will actually look, rather than reading PROJ_DATA:
-    # on a desktop the answer is the directory bundled inside the wheel, which
-    # takes precedence over the variable and would make an env-var check lie.
-    try:
-        from pyproj.datadir import get_data_dir
+    # Decide the expectation from the SHIPPED ARTIFACT, not from what PROJ
+    # reports. A test that asks the library whether it found a database, then
+    # asserts whichever answer it gave, passes in both branches and so proves
+    # nothing about either. Look for the file where flet-libproj puts it —
+    # site-packages/opt/share/proj — and where pyproj bundles its own on a
+    # desktop, then require the corresponding behaviour.
+    import pyproj
 
-        data_dir = get_data_dir()
-    except Exception:
-        data_dir = ""
-    have_db = bool(data_dir) and any(
-        os.path.exists(os.path.join(d, "proj.db")) for d in data_dir.split(os.pathsep)
-    )
+    site_packages = os.path.dirname(os.path.dirname(os.path.abspath(pyproj.__file__)))
+    candidates = [
+        os.path.join(site_packages, "opt", "share", "proj", "proj.db"),
+        os.path.join(
+            os.path.dirname(os.path.abspath(pyproj.__file__)),
+            "proj_dir", "share", "proj", "proj.db",
+        ),
+    ]
+    shipped = [c for c in candidates if os.path.exists(c)]
+    have_db = bool(shipped)
 
     if have_db:
         crs = CRS.from_epsg(4326)
-        assert crs.to_epsg() == 4326
+        assert crs.to_epsg() == 4326, f"database at {shipped[0]} but EPSG:4326 did not resolve"
         assert "WGS 84" in crs.name, crs.name
+        # And a real authority-to-authority transform, which is the whole point
+        # of having the database. 15E is UTM zone 33's central meridian, so the
+        # easting lands on the 500000 false easting exactly — a value that is
+        # checkable by hand rather than copied from a run.
+        easting, northing = Transformer.from_crs(
+            "EPSG:4326", "EPSG:32633", always_xy=True
+        ).transform(15.0, 60.0)
+        assert abs(easting - 500000.0) < 0.01, easting
+        assert abs(northing - 6651411.19) < 0.5, northing
     else:
         with pytest.raises(CRSError):
             CRS.from_epsg(4326)
