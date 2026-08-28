@@ -10,11 +10,14 @@ app store, edit and exchange real vector data with no database and no network �
 happens in-process, on files in app storage.
 
 Both platforms read and write. On both this is a deliberately small GDAL: six vector
-drivers, no `proj.db`, no `GDAL_DATA`, no GEOS and no libcurl, and none of that announces
-itself at import — **Drivers** and **Coordinate systems** below say what it rules out. The
-one rule to carry into every call is that a CRS has to be spelled as a proj-string rather
-than `EPSG:4326`, because resolving an authority code is a database lookup and no database
-ships.
+drivers, no `GDAL_DATA`, no GEOS and no libcurl, and none of that announces
+itself at import — **Drivers** and **Coordinate systems** below say what it rules out.
+
+EPSG codes do resolve, which they did not before: `flet-libproj` ships PROJ's database and
+fiona points PROJ at it. That is automatic on iOS; on Android it needs
+[`pyproj`](../pyproj) installed and `extract_packages` set, for the reason **Coordinate
+systems** gives. Proj-strings need no database at all and are the portable choice for code
+that has to run on both.
 
 Both platforms resolve one shared GDAL, so the wheels are small and near-identical: an iOS
 slice is 1.0 MB compressed and 3.1–3.2 MB unpacked, against 0.84–0.96 MB and 1.8–2.6 MB for
@@ -138,21 +141,40 @@ native call.
 
 ### Coordinate systems
 
-There is no `proj.db` and no `GDAL_DATA` on either platform, so **spell CRSes as
-proj-strings or WKT** and everything works with nothing supplied:
+**Proj-strings and WKT always work.** They name a projection by its parameters, so they need
+no database and behave identically on both platforms:
 
 ```python
 from fiona.crs import CRS
 
-CRS.from_string("+proj=longlat +datum=WGS84 +no_defs")  # works
-CRS.from_epsg(4326)  # CRSError: ... Cannot find proj.db
+CRS.from_string("+proj=longlat +datum=WGS84 +no_defs")
 ```
 
-[`CRS.from_string("EPSG:4326")`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.crs.CRS.from_string)
-fails the same way; the string form is not a way around it. What you give up is discovery —
-`to_string()` on a CRS built from a proj-string returns `GEOGCS["unknown", …]` rather than
-`"EPSG:4326"`, because naming a CRS means identifying it against the authority database, so
-you have to know the projection parameters yourself.
+**EPSG codes need PROJ's database, and where that is depends on the platform.** `flet-libgdal`
+resolves one shared PROJ for every consumer, so whichever package supplies the database
+supplies it for all of them.
+
+- **iOS: they just work.** `flet-libproj` ships `proj.db` and `fiona/__init__.py` points PROJ
+  at it before the first extension import. `CRS.from_epsg(4326)` resolves.
+- **Android: install [`pyproj`](../pyproj) and extract it.** The database cannot travel in
+  `flet-libproj` there — Flet lifts only `*.so` out of a `flet-lib*` `opt/` tree — so it ships
+  inside pyproj instead, and a file inside Flet's `sitepackages.zip` is not a path PROJ can
+  open. Both halves are needed:
+
+  ```toml
+  dependencies = ["flet", "fiona", "pyproj"]
+
+  [tool.flet.android]
+  extract_packages = ["pyproj"]   # without this the database stays in the zip
+  ```
+
+  `extract_packages` is read from **your** pyproject; it is never inherited from a
+  dependency, so nothing supplies it on your behalf. Miss it and EPSG codes go on raising
+  `CRSError` with nothing to say why.
+
+Without a database, what you give up is discovery: `to_string()` on a CRS built from a
+proj-string returns `GEOGCS["unknown", …]` rather than `"EPSG:4326"`, because naming a CRS
+means identifying it against the authority database.
 
 Writing a layer with **no** CRS at all is fine, and is what the example does: on an
 arm64-v8a emulator at 200 features per layer, GeoJSON and Shapefile round trips came back
@@ -164,15 +186,15 @@ reprojects between proj-string CRSes on both platforms. It is the one module a p
 `import fiona` does not load, so reaching for it is a decision rather than a side effect —
 see **App size** for what that costs on iOS.
 
-To get EPSG codes back you would ship a `proj.db` as an app asset and point fiona at it —
-`GDALEnv.start` honours `PROJ_DATA` from the environment, and
-`fiona._env.set_proj_data_search_path(path)` is in the shipped wheel, with
+To use your **own** database instead — a newer PROJ release, or one carrying datum grids —
+set `PROJ_DATA` to the directory holding it before importing fiona, from
 [`FLET_ASSETS_DIR`](https://flet.dev/docs/reference/environment-variables/#flet_assets_dir)
-naming where a bundled `src/assets/` lands on device. **That has not been run on a device
-for this recipe**, and on iOS `fiona._env` and `fiona.crs` carry separate statically linked
-copies of PROJ, so a database supplied through one is not the one the other reads.
-[`pyproj`](../pyproj), [`gdal`](../gdal) and [`rasterio`](../rasterio) sit on the same
-native chain and lose the same files.
+if you bundle it as an asset. An environment variable already set is left alone, so yours
+wins. It has to be set before the import: PROJ reads it when it creates its first context,
+which an API call afterwards is too late for.
+
+[`pyproj`](../pyproj), [`gdal`](../gdal), [`rasterio`](../rasterio) and
+[`pyogrio`](../pyogrio) share that one PROJ, so a database you supply serves all of them.
 
 ### Threading
 
