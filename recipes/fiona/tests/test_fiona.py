@@ -101,40 +101,47 @@ def test_transform_loads_and_reprojects():
     assert abs(back_lat[0] - lat) < 1e-6, back_lat
 
 
-def test_epsg_codes_need_proj_db():
-    """EPSG codes do not resolve: the chain ships no `proj.db`.
+def test_epsg_codes_work_where_proj_db_reached_the_device():
+    """EPSG codes resolve iff PROJ's database is on disk — assert whichever holds.
 
-    `flet-libproj` carries no PROJ database, so any CRS naming an authority fails
-    before fiona can use it. Spell the CRS as a proj-string instead — the test
-    above does, and round trips to 1e-6.
+    `flet-libproj` ships `proj.db` in `opt/share/proj` and the preload shim points
+    `PROJ_DATA` at it. On iOS that directory is real inside the app, so authority
+    codes resolve; on Android it never arrives, because Flet's `copyOpt` copies
+    only `*.so` out of a `flet-lib*` `opt/` tree. Both are correct answers for
+    their platform, and asserting the wrong one is the failure this catches.
 
-    The two platforms report the same gap differently, which is why this asserts
-    the failure rather than its wording: Android surfaces PROJ's own
-    `proj_create_from_database: Cannot find proj.db`, while iOS surfaces GDAL's
-    `The WKT could not be parsed. OGR Error code 6`. An earlier version of this
-    test pinned the Android string and went red on iOS for the wrong reason.
-
-    This is the same gap `pyproj` has, from the same library. Pinning it here
-    means a chain that later gains the database turns this test red, which is
-    the prompt to tell consumers the restriction has lifted.
+    Decide from the shipped artifact rather than from what PROJ reports, or the
+    test passes in both branches and proves neither. Proj-strings are the control:
+    they need no database and must keep working either way.
     """
-    import pytest
+    import os
 
+    import fiona
     from fiona.errors import CRSError
     from fiona.transform import transform
 
     wgs84 = "+proj=longlat +datum=WGS84 +no_defs"
     mercator = "+proj=merc +a=6378137 +b=6378137 +lon_0=0 +units=m +no_defs"
-    # Proj-strings must keep working wherever this runs; that is the control.
     assert transform(wgs84, mercator, [4.3517], [50.8503])[0]
 
-    try:
-        transform("EPSG:4326", "EPSG:3857", [4.3517], [50.8503])
-    except CRSError:
-        return  # the expected state on a device: no proj.db, authority lookups fail
-    pytest.skip(
-        "a PROJ database is present, so authority codes resolve — the state this "
-        "test exists to detect is a device without one. If this skip ever appears "
-        "on a device, the chain has gained proj.db and the docs saying otherwise "
-        "need updating."
+    package = os.path.dirname(os.path.abspath(fiona.__file__))
+    site_packages = os.path.dirname(package)
+    have_db = any(
+        os.path.exists(p)
+        for p in (
+            # where flet-libproj ships it on device
+            os.path.join(site_packages, "opt", "share", "proj", "proj.db"),
+            # where fiona's own PyPI wheel bundles one on a desktop
+            os.path.join(package, "proj_data", "proj.db"),
+        )
     )
+
+    if have_db:
+        # 15E is UTM zone 33's central meridian, so the easting is the 500000
+        # false easting exactly — checkable from the definition, not from a run.
+        xs, ys = transform("EPSG:4326", "EPSG:32633", [15.0], [60.0])
+        assert abs(xs[0] - 500000.0) < 0.01, xs
+        assert abs(ys[0] - 6651411.19) < 0.5, ys
+    else:
+        with pytest.raises(CRSError):
+            transform("EPSG:4326", "EPSG:3857", [4.3517], [50.8503])
