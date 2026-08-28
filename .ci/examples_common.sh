@@ -13,13 +13,24 @@
 #   dev_foreground         app is the foreground UI (android only; iOS = alive)
 # Kept bash-3.2-safe: the iOS driver runs on macOS's stock bash.
 
-# GNU timeout on Linux, gtimeout (brew coreutils) on the macOS runners; fall
-# back to running unbounded rather than failing the shard over a missing tool.
+# GNU timeout on Linux; the macOS runners ship neither timeout nor gtimeout,
+# so fall back to perl (always present): kill the child on expiry and exit
+# 124 like GNU timeout, so callers' rc=124 classification keeps working.
 run_with_timeout() {
     _secs="$1"; shift
     if command -v timeout >/dev/null 2>&1; then timeout "$_secs" "$@"
     elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$_secs" "$@"
-    else echo "::warning::no timeout binary; running unbounded: $*" >&2; "$@"; fi
+    else
+        perl -e '
+            my $s = shift @ARGV;
+            my $pid = fork // exit 127;
+            if ($pid == 0) { exec @ARGV or exit 127 }
+            $SIG{ALRM} = sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 };
+            alarm $s;
+            waitpid $pid, 0;
+            exit($? >> 8);
+        ' "$_secs" "$@"
+    fi
 }
 
 # numpy/bell-curve -> numpy--bell-curve (single '-' would be ambiguous:
