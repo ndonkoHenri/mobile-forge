@@ -14,3 +14,60 @@ skip = "expects a pre-fetched vocab asset under src/ (see the example README); n
 
 ["numpy/bell-curve"]
 expect = ["numpy \\d+\\.", "measured", "predicted"]
+
+# error_allow calibration from the 2026-08-28 ALL soak (run 33126750894):
+# every entry is a DELIBERATE error demonstration in that example's design —
+# input validation, tamper detection, engine comparisons, sandbox probing,
+# or the documented absent-proj.db limitation. Scoped to the demonstrated
+# classes so an unexpected new error still trips the gate.
+
+["bcrypt/cost-factor-explorer"]
+error_allow = ["ValueError: password cannot be longer than 72 bytes"]
+
+["cffi/ffi-probe"]
+error_allow = ["CDefError: "]
+
+["coolprop/property-check"]
+error_allow = ["ValueError: .*(range of validity|critical point)"]
+
+["fiona/feature-roundtrip"]
+error_allow = ["FAILED\\s+CRSError: "]
+
+["gdal/geotiff-roundtrip"]
+error_allow = ["RuntimeError: PROJ: proj_create_from_database", "RuntimeError: not-here\\.tif"]
+
+["msgspec/three-ways"]
+error_allow = ["ValidationError: "]
+
+["orjson/json-swap"]
+error_allow = ["TypeError: ", "JSONDecodeError: "]
+
+["psutil/sandbox-probe"]
+error_allow = ["PermissionError: "]
+
+["psycopg2/libpq-probe"]
+error_allow = ["ProgrammingError: ", "OperationalError: "]
+
+["pycryptodomex/cipher-suite"]
+error_allow = ["ValueError: MAC check failed"]
+
+["pymssql/freetds-probe"]
+error_allow = ["OperationalError: "]
+
+["pynacl/sealed-note"]
+error_allow = ["CryptoError: Decryption failed"]
+
+["pyproj/control-points"]
+error_allow = ["CRSError: "]
+
+["rasterio/elevation-tile"]
+error_allow = ["CRSError: The EPSG code is unknown"]
+
+["regex/vs-re"]
+error_allow = ["PatternError: ", "TypeError: findall"]
+
+["ujson/shape-bench"]
+error_allow = ["TypeError: ", "JSONDecodeError: "]
+
+["zstandard/level-lab"]
+error_allow = ["ZstdError: decompression error: Dictionary mismatch"]
