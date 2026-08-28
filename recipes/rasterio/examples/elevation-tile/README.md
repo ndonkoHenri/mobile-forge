@@ -4,11 +4,17 @@ A GeoTIFF written, read back and differenced against the array it came from, on 
 that carries no PROJ database. Every panel prints a count of mismatched elements and a
 worst absolute residual, so what you read is a measurement rather than a claim.
 
-A 1024×1024 float32 elevation surface is generated in numpy from a formula written in
-`src/main.py`, written into
+A 1024×1024 float32 elevation surface is generated in numpy from a formula in
+`src/elevation.py`, written into
 [`FLET_APP_STORAGE_DATA`](https://flet.dev/docs/reference/environment-variables/#flet_app_storage_data)
 as a tiled DEFLATE GeoTIFF, and read back several ways. It ships no data file and reaches
-no network — everything is generated at runtime.
+no network — everything is generated at runtime. `src/elevation.py` holds every rasterio and
+numpy call; `src/main.py` is Flet and the threading around them.
+
+It runs on both platforms: an arm64 Android emulator and an iPhone simulator each wrote and
+read the raster back with 0 of 1,048,576 pixels differing. Watch the size, though — an iOS
+slice of rasterio is 92–101 MB compressed, because on that platform every extension links its
+own static GDAL. The [recipe page](../..) has the breakdown.
 
 What it demonstrates:
 

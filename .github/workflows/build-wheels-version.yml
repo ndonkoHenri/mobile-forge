@@ -374,6 +374,55 @@ jobs:
             rm -f "dist/${key}-"*
           done < "$versions"
 
+      - name: Check wheel build tags match the recipes
+        shell: bash
+        env:
+          FORGE_PACKAGES: ${{ matrix.packages }}
+        # A wheel whose build tag is LOWER than the recipe's loses the PEP 427
+        # tie-break to whatever is already published at the same version, so the
+        # rebuild silently never reaches anyone. That is invisible in a green run:
+        # the job label comes from meta.yaml while the tag comes from the wheel,
+        # so the two can disagree and only the label is on screen.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          status=0
+          IFS=' ' read -r -a specs <<< "$FORGE_PACKAGES"
+          for spec in "${specs[@]}"; do
+            recipe="${spec%%:*}"
+            rest="${spec#"$recipe"}"; rest="${rest#:}"
+            explicit_build="${rest#*:}"
+            [[ "$rest" == *:* ]] || explicit_build=""
+
+            [[ -f "recipes/$recipe/meta.yaml" ]] || continue
+            IFS=$'\t' read -r _ declared _ <<< "$(uv run --script .ci/read_meta.py "recipes/$recipe/meta.yaml")"
+            expected="${explicit_build:-$declared}"
+            [[ -n "$expected" ]] || continue
+
+            normalized="$(printf '%s' "$recipe" | tr 'A-Z.-' 'a-z__')"
+            found=0
+            bad=0
+            for w in dist/*.whl; do
+              base="$(basename "$w")"
+              name="$(printf '%s' "${base%%-*}" | tr 'A-Z.-' 'a-z__')"
+              [[ "$name" == "$normalized" ]] || continue
+              found=1
+              # {name}-{version}-{build}-{py}-{abi}-{platform}.whl; the build tag
+              # is optional, and present only when field 3 starts with a digit.
+              field3="$(printf '%s' "$base" | cut -d- -f3)"
+              if [[ "$field3" =~ ^[0-9] ]]; then actual="$field3"; else actual="(none)"; fi
+              if [[ "$actual" != "$expected" ]]; then
+                echo "::error::$base has build tag '$actual' but $recipe declares '$expected' — it would lose the PEP 427 tie-break at this version"
+                status=1
+                bad=1
+              fi
+            done
+            if [[ "$found" == 1 && "$bad" == 0 ]]; then
+              echo "  ok: $recipe build $expected"
+            fi
+          done
+          exit "$status"
+
       - name: Summarize built wheels
         if: always()
         shell: bash

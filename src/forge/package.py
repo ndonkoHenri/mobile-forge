@@ -12,6 +12,23 @@ from forge.build import Builder, PythonPackageBuilder, SimplePackageBuilder
 from forge.cross import CrossVEnv
 
 
+def _same_version(left: str, right: str) -> bool:
+    """Compare two version strings, tolerating spelling differences.
+
+    Falls back to a string compare when either side will not parse, so an
+    unusual recipe version can never raise here.
+    """
+    try:
+        from packaging.version import InvalidVersion, Version
+
+        try:
+            return Version(left) == Version(right)
+        except InvalidVersion:
+            return left == right
+    except ImportError:  # pragma: no cover - packaging ships with pip/build
+        return left == right
+
+
 class Package:
     def __init__(
         self,
@@ -90,14 +107,23 @@ class Package:
         meta = yaml.safe_load(meta_str)
 
         # If there's a version override, set it in the package metadata.
-        # If there's a build number override, set it; otherwise purge
-        # the build number (since it won't match the override version)
+        # An explicit build number wins. Otherwise the recipe's build number
+        # survives unless the override names a DIFFERENT version, where it
+        # would describe a build of something else.
+        #
+        # Only purging on a genuine version change matters because the schema
+        # defaults `build.number` to 1, so purging it is a silent downgrade:
+        # `forge <pkg>:<same version>` -- the form CI uses when it pins a
+        # version -- would relabel a build 13 wheel as build 1, which then
+        # LOSES the PEP 427 tie-break against whatever is already published at
+        # that version, and the rebuild it was meant to ship becomes invisible.
         if override_version:
             try:
+                recipe_version = str(meta["package"]["version"])
                 meta["package"]["version"] = override_version
                 if override_build:
                     meta.setdefault("build", {})["number"] = override_build
-                else:
+                elif not _same_version(recipe_version, override_version):
                     del meta["build"]["number"]
             except KeyError:
                 pass

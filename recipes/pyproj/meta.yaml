@@ -3,29 +3,36 @@ package:
   version: "3.7.2"
 
 build:
-  number: 1
+  # 2 moves iOS onto the SHARED libproj that flet-libproj ships from its build
+  # 11. Eight of pyproj's extensions used to absorb their own PROJ, each with
+  # its own proj.db search path, so set_data_dir() configured one of eight; they
+  # now link one image, and libgdal links the same one.
+  number: 2
   script_env:
     PROJ_VERSION: 9.5.0
     PROJ_DIR: '{platlib}/opt'
 # {% if sdk != 'android' %}
-    # iOS links every flet-lib* as a static archive, so the upper library is
-    # missing the objects its own dependencies need; dyld aborts at dlopen on
-    # the first unresolved symbol (_TIFFClientOpen). Naming the whole chain here makes
-    # each extension's link pull them in. Full explanation, and the upstream fix
-    # that would retire it, in forge-error-catalogue: "symbol not found in flat
-    # namespace" (iOS, transitive dep of a static flet-lib*).
-    PROJ_LIBS: proj,tiff,curl,psl,sqlite3,jpeg,ssl,crypto,z
-    LDFLAGS: '-undefined dynamic_lookup'
+    # libproj is a real shared library on iOS now, and it resolves its own
+    # dependency tree (tiff, jpeg, curl, ssl, crypto, psl) internally, so naming
+    # that chain here would link it a second time -- once per extension, which
+    # is what this used to do.
+    PROJ_LIBS: proj
+    # NOT `-undefined dynamic_lookup`: that suppressed the link errors this
+    # chain used to produce, and with a real dylib an unresolved symbol is a
+    # genuine defect that must fail here rather than at dlopen on a device.
+    # The headerpad is required: serious_python rewrites each extension's
+    # dependency from `@rpath/libproj.dylib` to the much longer
+    # `@rpath/opt.lib.libproj.framework/opt.lib.libproj`, and setuptools links
+    # with no padding, so install_name_tool fails, the relocation pass aborts,
+    # and `flet build` still exits 0 having shipped an app with no
+    # site-packages.
+    LDFLAGS: '-Wl,-headerpad_max_install_names'
 # {% endif %}
 
 requirements:
   host:
     - flet-libproj 9.5.0
-# {% if sdk != 'android' %}
-    # iOS-only — see PROJ_LIBS comment above for the rationale.
-    - openssl >=3.0.15
-    - flet-libjpeg 3.0.90
-# {% endif %}
 
 patches:
   - mobile.patch
+  - ios-libproj-preload.patch

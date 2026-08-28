@@ -8,7 +8,10 @@ source:
   url: https://github.com/OSGeo/gdal/releases/download/v{{ version }}/gdal-{{ version }}.tar.gz
 
 build:
-  number: 2
+  # 3 builds iOS SHARED and links the shared libproj. A static libgdal is copied
+  # into every extension that links it, so each would get its own driver
+  # registry -- the module that registers is not the module that looks up.
+  number: 3
 
 requirements:
   build:

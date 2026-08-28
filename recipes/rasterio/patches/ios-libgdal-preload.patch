@@ -1,0 +1,98 @@
+Preload libproj + libgdal, and point PROJ at the database, before the extensions.
+
+flet-libgdal ships a shared libgdal.dylib for iOS which links the shared
+libproj.dylib, so gdal, fiona, rasterio, pyogrio and pyproj all resolve ONE GDAL
+and ONE PROJ. That single instance is what makes both halves of this patch work.
+
+Delivery first: serious_python relocates each extension module into its own
+*.framework bundle, while the dylibs stay plain files in site-packages/opt/lib,
+and nothing on the relocated extensions' rpath points at them, so the first
+import would die with "Library not loaded: @rpath/libgdal.dylib". Loading them
+RTLD_GLOBAL in dependency order (libproj, then libgdal) makes dyld bind each
+@rpath reference by an already-loaded image's install-id.
+
+Then PROJ_DATA. flet-libproj ships proj.db in opt/share/proj, and on iOS that is
+a real directory inside the app, so pointing PROJ at it makes EPSG codes resolve
+-- for every consumer at once, since they share the instance. It has to be an
+environment variable set before the first import rather than an API call,
+because PROJ reads it when it creates its first context. An app that sets its
+own PROJ_DATA, or ships its own database as an asset, still wins.
+
+On Android neither half applies: DT_NEEDED resolves the .so by basename out of
+jniLibs, and proj.db never reaches the device at all, because Flet's copyOpt
+copies only *.so out of a flet-lib* opt/ tree. Both blocks fail their existence
+checks and do nothing. Inert on desktop for the same reason.
+
+--- a/rasterio/__init__.py
++++ b/rasterio/__init__.py
+@@ -1,4 +1,70 @@
+ """Rasterio"""
++
++# mobile-forge (iOS): the extension modules below link libgdal, which itself links libproj, through @rpath,
++# and flet relocates each of them into its own *.framework bundle while the
++# dylibs ship as plain files in site-packages/opt/lib. Nothing on the
++# extensions' rpath resolves that, so the first import otherwise dies with
++# "Library not loaded: @rpath/lib....dylib". Preload them RTLD_GLOBAL first, in
++# dependency order: once an image is loaded, dyld satisfies each @rpath
++# reference by matching the already-loaded image's install-id. Where a flet
++# build DID relocate one into a framework it leaves a "<name>.fwork" text
++# marker holding the app-relative path, so follow that instead. No-op on
++# Android, where DT_NEEDED resolves the .so by basename out of jniLibs, and on
++# desktop, where there is no opt/lib to find.
++try:
++    import ctypes as _mf_ctypes
++    import os as _mf_os
++
++    _mf_optlib = _mf_os.path.join(
++        _mf_os.path.dirname(_mf_os.path.dirname(_mf_os.path.abspath(__file__))),
++        "opt",
++        "lib",
++    )
++    for _mf_base in ("libproj", "libgdal"):
++        _mf_dylib = _mf_os.path.join(_mf_optlib, _mf_base + ".dylib")
++        if _mf_os.path.exists(_mf_dylib):
++            try:
++                _mf_ctypes.CDLL(_mf_dylib, mode=_mf_ctypes.RTLD_GLOBAL)
++            except OSError:
++                pass
++            continue
++        _mf_fwork = _mf_os.path.join(_mf_optlib, _mf_base + ".fwork")
++        if not _mf_os.path.exists(_mf_fwork):
++            continue
++        _mf_rel = open(_mf_fwork).read().strip()
++        _mf_dir = _mf_optlib
++        for _ in range(12):
++            _mf_dir = _mf_os.path.dirname(_mf_dir)
++            _mf_candidate = _mf_os.path.join(_mf_dir, _mf_rel)
++            if _mf_os.path.exists(_mf_candidate):
++                try:
++                    _mf_ctypes.CDLL(_mf_candidate, mode=_mf_ctypes.RTLD_GLOBAL)
++                except OSError:
++                    pass
++                break
++except Exception:
++    pass
++
++# mobile-forge: point PROJ at the database flet-libproj ships, so EPSG codes
++# resolve. PROJ reads PROJ_DATA when it creates its first context, which is why
++# this runs before any extension import rather than through an API call. Only
++# set when the app has not chosen its own, so an explicit PROJ_DATA or a bundled
++# asset still wins. On Android the file is not on disk (Flet's copyOpt copies
++# only *.so out of a flet-lib* opt/ tree), so the check simply fails and EPSG
++# codes go on raising CRSError there.
++try:
++    import os as _mf_os2
++
++    if not _mf_os2.environ.get("PROJ_DATA") and not _mf_os2.environ.get("PROJ_LIB"):
++        _mf_projdata = _mf_os2.path.join(
++            _mf_os2.path.dirname(_mf_os2.path.dirname(_mf_os2.path.abspath(__file__))),
++            "opt", "share", "proj",
++        )
++        if _mf_os2.path.exists(_mf_os2.path.join(_mf_projdata, "proj.db")):
++            _mf_os2.environ["PROJ_DATA"] = _mf_projdata
++            _mf_os2.environ["PROJ_LIB"] = _mf_projdata
++except Exception:
++    pass
+ 
+ from collections import namedtuple
+ from contextlib import ExitStack

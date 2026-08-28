@@ -238,12 +238,56 @@ not from `meta.yaml`, so a trailing colon always stages an unpinned dep.
 
 | Input | Notes |
 |---|---|
-| `packages` | `"name:"` entries, comma-separated; `:` suffix means default version. `ALL` expands to every recipe |
+| `packages` | `"name:"` entries, comma-separated; `:` suffix means default version. `ALL` expands to every recipe. **Prefer the bare `name:` form** — see the build-tag note below |
 | `prebuild_recipes` | comma-separated, **ordered**, built per-job before packages |
 | `python_versions` | defaults to all three; narrow for a quick re-run (e.g. `3.12.13`) |
 | `mobile_test_pythons` | default `3.12`. |
 | `archs` | default `android,iOS` |
 | `python_build_run_id` | a `flet-dev/python-build` Actions run-id whose artifacts to use instead of the pinned release; empty → the hardcoded FALLBACK in `build-wheels-version.yml` (grep `PYTHON_BUILD_RUN_ID: ${{ … || '<id>' }}`). Bump that fallback to ship an unreleased python-build fix to every job |
+
+### The build tag is not the job label — check the wheel
+
+The job name comes from `.ci/read_meta.py` reading `meta.yaml`; the wheel's build
+tag comes from what forge actually produced. They can disagree, and only the
+label is on screen.
+
+Pinning a version used to break them apart: `forge <pkg>:<version>` deleted the
+recipe's `build.number`, and the schema defaults it back to **1**. A recipe
+declaring build 13 then shipped a wheel tagged 1 — which LOSES the PEP 427
+tie-break to whatever is already published at that same version, so the rebuild
+reaches nobody while CI is green and the label says `#13`. Fixed in
+`src/forge/package.py` (the purge now applies only when the version genuinely
+changes), and a **Check wheel build tags match the recipes** step now fails the
+job on any mismatch.
+
+Two habits that survive the fix:
+
+- Dispatch with the bare `name:` form unless you specifically need a version.
+  `name:version:build` is the explicit form when you do.
+- When a run is meant to ship a fix, read the wheel filename, not the job name:
+  `{name}-{version}-{build}-{py}-{abi}-{platform}.whl`. A tag lower than what is
+  published at that version means the run accomplished nothing downstream.
+
+### A recipe chain mid-flight needs DISPATCH, not push — and the push run will be red
+
+`prebuild_recipes` is a **dispatch input only**. The push path builds whatever the
+changed-files detection selects and resolves every `flet-lib*` from pypi.flet.dev, so
+while a library and its consumers are being changed together the push run links the
+consumers against the PUBLISHED library. If the consumer recipes have already moved on
+— a collapsed `GDAL_LIBS`, `-undefined dynamic_lookup` removed — that cannot link, and
+every affected job goes red until the library is published.
+
+Seen on the shared-libgdal/libproj work: push run 33118055088 failed every iOS job with
+`Undefined symbols … libgdal.a[29](cpl_conv.cpp.o)` — the static archive from the index —
+while the dispatched run with `prebuild_recipes="flet-libproj,flet-libgdal"` was green.
+Android passed throughout, because its libraries were already shared.
+
+Two consequences:
+
+- **Validate such a chain by dispatch, naming every library in `prebuild_recipes` in
+  dependency order.** Expect the accompanying push run to be red and do not chase it.
+- **Publish order matters at merge.** The libraries must reach the index before or with
+  their consumers, or the first consumer build after merge links a stale library.
 
 ## Testing recipes against UNRELEASED serious_python / python-build (pre-PR validation)
 

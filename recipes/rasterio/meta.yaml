@@ -10,20 +10,15 @@ requirements:
     # rasterio's `_warp.so` / `_filepath.so` / `_fill.so` carry
     # `DT_NEEDED libc++_shared.so` directly.
     - flet-libcpp-shared >=27.2.12479018
-# {% else %}
-    # iOS-only — see GDAL_LIBS comment below for the rationale.
-    - openssl >=3.0.15
-    - flet-libjpeg 3.0.90
 # {% endif %}
 
 build:
-  # Same source version as pypi.flet.dev's rasterio-1.5.0-10 wheel, but
-  # this rebuild links against flet-libgdal 3.13.1 (vs. the published
-  # wheel's 3.10.0). pip's wheel selection picks the higher build_tag
-  # per PEP 427 when name+version collide; the new wheel must outrank
-  # build 10 or downstream installs would silently keep the old
-  # libgdal-3.10-linked rasterio and the gdal chain bump would be invisible.
-  number: 11
+  # 12 moves iOS onto the shared libgdal/libproj pair. One image means one
+  # driver registry, so ios-driver-registry.patch is gone -- including its
+  # rasterio.shutil hunk. A preload shim replaces it, because the extensions
+  # link the dylibs through @rpath and nothing on their rpath resolves those
+  # once flet has relocated them.
+  number: 12
   script_env:
     GDAL_VERSION: 3.13.1
     # rasterio reads GDAL_LIB_PATH (a colon-separated list); pyogrio's is spelled
@@ -33,15 +28,23 @@ build:
 # {% if sdk == 'android' %}
     GDAL_LIBS: gdal
 # {% else %}
-    # iOS links every flet-lib* as a static archive, so the upper library is
-    # missing the objects its own dependencies need; dyld aborts at dlopen on
-    # the first unresolved symbol (_geod_init). Naming the whole chain here makes
-    # each extension's link pull them in. Full explanation, and the upstream fix
-    # that would retire it, in forge-error-catalogue: "symbol not found in flat
-    # namespace" (iOS, transitive dep of a static flet-lib*).
-    GDAL_LIBS: gdal,proj,tiff,curl,psl,sqlite3,jpeg,ssl,crypto,z
-    LDFLAGS: '-undefined dynamic_lookup'
+    # libgdal is a real shared library on iOS now, and it resolves its own
+    # dependency tree (proj, tiff, jpeg, curl, ssl, crypto, psl) internally, so
+    # naming that chain here would be linking it a second time -- once per
+    # extension, which is what this used to do.
+    GDAL_LIBS: gdal
+    # NOT `-undefined dynamic_lookup`: that suppressed the link errors this
+    # chain used to produce, and with a real dylib an unresolved symbol is a
+    # genuine defect that must fail here rather than at dlopen on a device.
+    # The headerpad is required: serious_python rewrites each extension's
+    # dependency from `@rpath/libgdal.dylib` to the much longer
+    # `@rpath/opt.lib.libgdal.framework/opt.lib.libgdal`, and setuptools links
+    # with no padding, so install_name_tool fails, the relocation pass aborts,
+    # and `flet build` still exits 0 having shipped an app with no
+    # site-packages.
+    LDFLAGS: '-Wl,-headerpad_max_install_names'
 # {% endif %}
 
 patches:
   - mobile.patch
+  - ios-libgdal-preload.patch

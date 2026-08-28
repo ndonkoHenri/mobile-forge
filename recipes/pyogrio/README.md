@@ -19,16 +19,15 @@ dependencies = [
 ]
 ```
 
-**Treat this as Android-only. The iOS wheels build, install and import, and then cannot find a
-driver.** Registering drivers and doing the I/O happen in two different extension modules, and
-each iOS extension links its own copy of GDAL, so the table one of them fills in is invisible
-to the other. `pyogrio.list_drivers()` returns a full list, and then a write raises
-`pyogrio.errors.DataSourceError: Could not obtain driver: GeoJSON (check that it was installed
-correctly into GDAL)`, while a read raises a `DataSourceError` about an unsupported file
-format. Fixing that means relinking the iOS slices, not changing anything in your app. If the
-project also builds for iOS, move pyogrio out of `[project] dependencies` into
-[`[tool.flet.android] dependencies`](https://flet.dev/docs/publish/#app-dependencies) so the
-iOS app does not ship a package it cannot use, and guard the import.
+Both platforms read and write, and this is a deliberately small GDAL behind them: six vector
+drivers, no `proj.db`, no GDAL data directory. **Formats** and **Coordinate systems** below
+say what that rules out — GeoPackage is not one of the six, and a CRS has to be spelled as a
+proj-string rather than `EPSG:4326`.
+
+Both platforms share one GDAL, so the wheels are small and near-identical: an iOS slice is
+0.6–0.7 MB compressed and 2.2–2.3 MB unpacked, against 0.6 MB and 1.9 MB for an Android
+wheel. The GDAL itself is separate — `flet-libgdal` — and **App size** puts the two together,
+which is the comparison that actually decides it.
 
 ## Examples
 
@@ -157,12 +156,18 @@ unchanged and tagged `EPSG:4326` on a desktop GDAL 3.11.4, silently. Transform b
 
 ### App size
 
-On Android the wheels are approximately 0.57–0.62 MB compressed and 1.7–1.9 MB unpacked, but
+On Android the wheels are approximately 0.60–0.64 MB compressed and 1.7–2.0 MB unpacked, but
 the shared GDAL chain behind them adds about 21.5 MB of libraries per ABI — on arm64-v8a,
 `libgdal.so` at 14.0 MB and `libproj.so` at 4.6 MB, then libturbojpeg, libtiff, libcurl,
 libjpeg and libpsl. Use an app bundle, split APKs, or narrow
 [`target_arch`](https://flet.dev/docs/publish/android/#supported-target-architectures) when
 the app does not need every ABI.
+
+iOS has no shared GDAL to amortise, so the chain is inside the wheels: 27.8–30.6 MB
+compressed and 78.3–83.7 MB unpacked per slice, measured on build 2. Compare *totals* rather
+than wheels — an Android ABI costs about 1.9 MB of wheel plus 21.5 MB of shared libraries,
+so iOS is roughly three times an ABI, not forty times. An `ipa` carries one slice, and
+nothing else in the chain ships alongside it.
 
 Just over half of each unpacked Android wheel — 1,008,031 bytes on every architecture — is
 `pyogrio/tests` and its fixtures, which your app never imports. Flet's default
@@ -208,24 +213,23 @@ device or emulator.
 
 ### Recipe shape
 
-This is a consumer of the `flet-libgdal` chain, and the platform difference in that chain is
-the whole story: Android gets one shared `libgdal.so` that all five extensions resolve
-against, while iOS links `libgdal.a` into each extension separately. The patch preamble owns
-the `GDAL_LIBS` mechanism and `meta.yaml`'s comments own the individual settings; do not
-restate either here.
+This is a consumer of the `flet-libgdal` chain, and both platforms now resolve one shared
+image: `libgdal.so` on Android, `libgdal.dylib` on iOS. The patch preamble owns the delivery
+mechanism and `meta.yaml`'s comments own the individual settings; do not restate either here.
 
-What is worth recording is that `GDAL_LIBS` solves a *load* failure and not the *table* split
-above it. Naming GDAL's static dependency chain stops dyld aborting on an unresolved
-`_geod_init` at import; it does nothing about `_ogr` and `_io` holding a driver manager each.
-All nine published iOS wheels read the same way on 2026-08-21 — cp312, cp313 and cp314,
-device and both simulators: `_ogr` defines `OGRRegisterAll`, `GDALAllRegister` and the five
-`RegisterOGR*` entry points, `_io` defines none of them, and neither image imports a GDAL
-symbol from anywhere else, each defining its own `GDALGetDriverByName` and
-`GetGDALDriverManager`. `_io` therefore looks drivers up in a manager nothing registers into.
-Three of the five extensions carry a whole static GDAL, which is also why the iOS wheels are
-27–30 MB compressed against Android's 0.6 MB. A fix has to put registration and lookup in one
-image — a shared GDAL, or a link that merges the extensions — and until one exists the
-Install warning has to stay.
+**The shared library is load-bearing, not an optimisation.** A static `libgdal.a` is copied
+*into* every extension that links it, so each of `_ogr`, `_io` and `_geometry` would carry its
+own GDAL — and with it its own driver registry and its own configuration. pyogrio registers
+in `_ogr` while reads and writes resolve driver names in `_io`, so the registry populated
+would not be the one consulted: `list_drivers()` reports a full table and every read and write
+fails. Keeping `flet-libgdal` shared on iOS is what makes those the same registry.
+
+What remains is delivery, which `ios-libgdal-preload.patch` handles: flet relocates each
+extension into its own framework while the dylib stays a plain file in `opt/lib`, and nothing
+on a relocated extension's rpath resolves it, so the dylib is loaded `RTLD_GLOBAL` before the
+first extension import. Verify with `otool -L` that every extension names
+`@rpath/libgdal.dylib` and that none of them *defines* `GDALAllRegister` — a definition means
+a static GDAL crept back in.
 
 ### Upgrade hazards
 
@@ -238,10 +242,12 @@ keeps the driver set to the handful this page names.
 
 ### Re-verification checklist
 
-- **The iOS split, first:** `nm` for `OGRRegisterAll`, `GDALAllRegister` and `RegisterOGR*` in
-  `_ogr` and in `_io`, at any binding, and disassemble `_io`'s `__text` for calls to them. If
-  a bump ever makes `_io` register drivers, rewrite the Install section rather than carrying
-  the warning forward; if it does not, confirm the exception text still matches.
+- **That libgdal is still SHARED on iOS, first.** `file` the wheel's
+  `opt/lib/libgdal.dylib` — it must be a `Mach-O … dynamically linked shared library`, and
+  `otool -D` must report `@rpath/libgdal.dylib`. Then confirm no extension *defines*
+  `GDALAllRegister` (`nm -a <ext> | grep " [tT] _GDALAllRegister"` → empty) while every one
+  of them names `@rpath/libgdal.dylib` in `otool -L`. A definition means a static GDAL got
+  linked in again, which silently restores a registry per extension.
 - **Android's single table:** every extension names `libgdal.so` in `DT_NEEDED`, `_ogr`
   imports `GDALAllRegister` as undefined — that, not `OGRRegisterAll`, is what `_ogr.pyx`
   calls — and `_io` imports `GDALGetDriverByName`, `GDALOpenEx` and `GDALCreate` as
@@ -263,12 +269,13 @@ keeps the driver set to the handful this page names.
 
 ### Coverage gaps
 
-`tests/test_pyogrio.py` exercises `list_drivers()` and `__gdal_version__`, and both live in
-`_ogr` — so **the suite passes on iOS while every read and write there is broken**, and a
-green mobile-test run says nothing about I/O on that platform. A test that would catch it has
-to write a file and read it back, which is also the cheapest coverage to add.
+`test_vector_round_trip` writes a GeoJSON layer and reads it back, which is the only test
+here that reaches `_io`. Keep that asymmetry in mind before adding tests: `list_drivers()`
+and `__gdal_version__` are `_ogr` calls, and they passed on iOS throughout the period the
+package could not open a dataset there. It should always write with a proj-string CRS, never
+an authority code, or it fails at the CRS before reaching the thing it exists to check.
 
-Nothing on device covers the attribute round trip, the Shapefile's sibling files, in-memory
-`/vsimem` datasets, the Arrow API, appending to a layer, or geopandas. The **Formats**,
-**Coordinate systems** and **Threading** figures come from a desktop wheel carrying a
-different GDAL, and are stated that way; promote those to device coverage first.
+Not covered on device: the attribute round trip, the Shapefile's sibling files, in-memory `/vsimem`
+datasets, the Arrow API, appending to a layer, and geopandas. The **Formats**, **Coordinate
+systems** and **Threading** figures come from a desktop wheel carrying a different GDAL, and
+are stated that way; promote those to device coverage first.

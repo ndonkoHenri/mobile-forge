@@ -99,3 +99,30 @@ def test_model_round_trips_through_app_storage(tmp_path):
 
     probe = np.array([[1.5], [7.5]])
     assert list(reloaded.predict(probe)) == list(model.predict(probe))
+
+
+def test_hist_gradient_boosting():
+    """HistGradientBoosting -> the eight _hist_gradient_boosting extensions.
+
+    Nothing else here loads them, and they are upstream's most OpenMP-heavy
+    code — which is exactly what `test_openmp_matches_the_platform` asserts
+    differs between the platforms. So this is the estimator where a wrong
+    OpenMP answer would show up as more than a wall-clock difference, and it
+    was the one with no coverage. Kept tiny: the point is that the compiled
+    path runs and separates two obvious clusters, not that it fits well.
+    """
+    import numpy as np
+    from sklearn.ensemble import HistGradientBoostingClassifier
+
+    rng = np.random.RandomState(0)
+    features = np.vstack([
+        rng.normal(loc=-2.0, scale=0.3, size=(40, 2)),
+        rng.normal(loc=+2.0, scale=0.3, size=(40, 2)),
+    ])
+    labels = np.array([0] * 40 + [1] * 40)
+
+    model = HistGradientBoostingClassifier(max_iter=10, random_state=0).fit(
+        features, labels
+    )
+    assert model.score(features, labels) == 1.0
+    assert list(model.predict([[-2.0, -2.0], [2.0, 2.0]])) == [0, 1]

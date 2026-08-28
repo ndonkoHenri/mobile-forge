@@ -89,3 +89,54 @@ def test_numpy_vectorized():
     assert isinstance(coords, np.ndarray)
     assert coords.shape == (4, 2)
     np.testing.assert_array_equal(coords[0], coords[-1])  # ring closed
+
+
+def test_ragged_array_round_trip():
+    """Cross from `lib` into `_geometry_helpers`, which on iOS is a second GEOS.
+
+    `flet-libgeos` is a static archive there, so `lib`, `_geos` and
+    `_geometry_helpers` each link their own copy — all three *define*
+    `GEOS_init_r` and none imports it. Geometries built by one and read by
+    another therefore cross library instances. Every other test here stays
+    inside `lib`, so nothing exercised that until now.
+
+    `to_ragged_array`/`from_ragged_array` are the cheapest path that does:
+    they live in `_geometry_helpers` and take geometries `lib` allocated.
+    """
+    import numpy as np
+    from shapely import from_ragged_array, to_ragged_array
+    from shapely.geometry import Polygon
+
+    original = [
+        Polygon([(0, 0), (2, 0), (2, 2), (0, 2)]),
+        Polygon([(4, 4), (6, 4), (6, 6), (4, 6)]),
+    ]
+    geometry_type, coords, offsets = to_ragged_array(original)
+    restored = from_ragged_array(geometry_type, coords, offsets)
+
+    assert len(restored) == 2
+    for before, after in zip(original, restored):
+        assert after.equals(before), f"{after.wkt} != {before.wkt}"
+        assert np.isclose(after.area, before.area)
+
+
+def test_strtree_queries_geometries_built_elsewhere():
+    """An STRtree indexes geometries it did not create — another instance cross.
+
+    The index holds pointers to geometries `lib` allocated and runs predicates
+    against them. On one shared libgeos that is unremarkable; with a static one
+    per extension it is the kind of hand-off that has nowhere to go wrong until
+    it does, and no test covered it.
+    """
+    from shapely import STRtree
+    from shapely.geometry import Point
+
+    points = [Point(x, 0) for x in range(10)]
+    tree = STRtree(points)
+
+    hits = tree.query(Point(4, 0).buffer(1.5))
+    assert len(hits) >= 3, f"expected the neighbours of x=4, got {sorted(hits)}"
+    assert 4 in list(hits)
+
+    nearest = tree.nearest(Point(7.4, 0))
+    assert points[int(nearest)].equals(Point(7, 0))

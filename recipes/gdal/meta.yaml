@@ -13,28 +13,32 @@ requirements:
     # libgdal links C++; the SWIG-generated _gdal.so loads via dlopen which
     # needs libc++_shared.so on Android.
     - flet-libcpp-shared >=27.2.12479018
-# {% else %}
-    # iOS-only — see GDAL_LIBS comment below for the rationale.
-    - openssl >=3.0.15
-    - flet-libjpeg 3.0.90
 # {% endif %}
 
 build:
-  number: 1
+  # 2 moves iOS onto the shared libgdal/libproj pair: one GDAL and one PROJ for
+  # every consumer in the app. Needs the preload shim, because the extensions
+  # link the dylibs through @rpath and nothing on their rpath resolves those
+  # once flet has relocated them into frameworks.
+  number: 2
   script_env:
     GDAL_VERSION: 3.13.1
     GDAL_PREFIX: '{platlib}/opt'
     GDAL_CFLAGS: ''
 # {% if sdk != 'android' %}
-    # iOS links every flet-lib* as a static archive, so the upper library is
-    # missing the objects its own dependencies need; dyld aborts at dlopen on
-    # the first unresolved symbol (_geod_init). Naming the whole chain here makes
-    # each extension's link pull them in. Full explanation, and the upstream fix
-    # that would retire it, in forge-error-catalogue: "symbol not found in flat
-    # namespace" (iOS, transitive dep of a static flet-lib*).
-    GDAL_LIBS: gdal,proj,tiff,curl,psl,sqlite3,jpeg,ssl,crypto,z
-    LDFLAGS: '-undefined dynamic_lookup'
+    # libgdal is a real shared library on iOS now and resolves its own
+    # dependency tree internally, so setup.py's own `libraries = ['gdal']`
+    # would do -- but config.patch's GDAL_LIBS hook is what setup.py reads, so
+    # name it here rather than leaving the variable unset.
+    GDAL_LIBS: gdal
+    # NOT `-undefined dynamic_lookup`: with a real dylib an unresolved symbol is
+    # a defect that must fail at link, not at dlopen on a device. The headerpad
+    # is required because serious_python rewrites the extension's dependency
+    # from `@rpath/libgdal.dylib` to the much longer framework path, and
+    # setuptools links with no padding.
+    LDFLAGS: '-Wl,-headerpad_max_install_names'
 # {% endif %}
 
 patches:
   - config.patch
+  - ios-libgdal-preload.patch

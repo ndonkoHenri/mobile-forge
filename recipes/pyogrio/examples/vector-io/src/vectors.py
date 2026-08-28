@@ -83,8 +83,9 @@ def registered_drivers():
 
     This reads the registry through pyogrio's `_ogr` extension, while reads and
     writes go through `_io`. On Android both are views of one shared libgdal;
-    on iOS they are two statically linked copies, so a full table here is not
-    evidence that a round trip will work.
+    on iOS they are separate statically linked copies, each with its own
+    registry, so a full table here is not on its own evidence that a round trip
+    will run — which is why the app runs one.
     """
     return sorted(pyogrio.list_drivers().items())
 

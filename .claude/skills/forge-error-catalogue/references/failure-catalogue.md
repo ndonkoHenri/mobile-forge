@@ -1849,6 +1849,164 @@ model pack is `buffalo_sc` (det_500m + w600k_mbf, 15MB download).
 
 ---
 
+### iOS: a multi-extension package with a STATIC `flet-lib*` gets one registry/global per extension — "no such driver/plugin/codec registered", or a silently wrong answer
+
+**Shape:** the package imports, a listing call reports a healthy table, and the
+call that *uses* the table fails or lies. Seen as
+`DriverRegistrationError: ('No such driver registered: %s', b'GTiff')` (rasterio),
+`DataSourceError: Could not obtain driver: GeoJSON` (pyogrio) and
+`FionaNullPointerError` (fiona) — all on iOS only, all in a process that had just
+listed the thing it then could not find.
+
+**Cause:** `flet-libgdal` (and any `flet-lib*` that ships only a `.a` on iOS) is
+linked separately into EVERY extension of the consumer. Each copy carries its own
+copy of the library's process-global state — for GDAL, the driver registry. The
+module that registers and the module that looks up are different extensions, so
+one populates a table the other never sees. Android is immune: one shared
+`libgdal.so`, one registry.
+
+Generalises past GDAL to any static lib with a register-then-lookup global: codec
+tables, plugin registries, `atexit`-style handler lists, cached config.
+
+**Fix:** call the registration function at module scope in every extension that
+does a lookup. `GDALAllRegister()` is idempotent, so the same patch is a no-op on
+Android. See `recipes/{rasterio,pyogrio,fiona}/patches/ios-driver-registry.patch`.
+
+**Finding the modules that need it — do NOT read the linked binary.** A static
+GDAL puts ~41 `GDALGetDriverByName` and ~121 `GDALOpen` call sites inside every
+extension, including ones like `crs` and `_version` that obviously never open a
+dataset, and every extension also *defines* the registration symbols. So `nm`
+cannot distinguish, and a raw `otool -tV` count is mostly GDAL's own internals.
+Read the **generated C** instead — an Android wheel ships `<pkg>/*.c`:
+
+```bash
+unzip -o -q <pkg>-*-android_*.whl -d x
+for f in x/<pkg>/*.c x/<pkg>/*.cpp; do
+  printf "%-16s lookups=%s registers=%s\n" "$(basename $f)" \
+    "$(grep -c 'GDALGetDriverByName\|GDALOpenEx(\|GDALCreate(' $f)" \
+    "$(grep -c 'GDALAllRegister' $f)"
+done
+```
+
+Equivalently, grep the sdist's `.pyx` (declarations live in `.pxd`/`gdal.pxi`, so
+only `.pyx` hits are real calls). rasterio build 12 shipped with `_base` and `_io`
+patched and `shutil` missed this way.
+
+**Verify the fix in the shipped wheel** with call sites, not definitions:
+`otool -tV <ext>.so | grep -cE 'bl\s+.*_GDALAllRegister'` must be ≥1 for each
+module the grep above named.
+
+**Test for it, or CI will stay green.** The natural tests — `list_drivers()`,
+`__gdal_version__`, a driver count — all live in the module that registers, so
+they pass while every read and write on that platform is broken. A test has to
+write a file and read it back. Watch for two traps: (1) a write needs a CRS spelled
+as a proj-string, never `EPSG:4326`, since these chains ship no `proj.db` and the
+test would fail at the CRS before reaching the registry; (2) some entry points fail
+*quietly* — `rasterio.shutil.exists()` identifies a format by asking every
+registered driver, and asking none of them returns `False` rather than raising, so
+assert the `True`.
+
+**Limit:** this makes the package usable, not correct. The copies stay separate
+library instances, so configuration set through one extension (`rasterio.Env()`,
+`pyogrio.set_gdal_config_options()`) still does not reach another.
+
+**THE COMPLETE FIX — build the `flet-lib*` SHARED for iOS.** Done for
+`flet-libgdal` (build 3, 2026-08-27) and verified on device for all four
+consumers; it retires the per-extension registration patches outright. Recipe:
+
+1. **`-DBUILD_SHARED_LIBS=ON`** in the iOS branch. One line, and the rest is what
+   it exposes.
+2. **DE-VERSION the dylib.** CMake installs `libX.<soversion>.dylib` plus two
+   symlinks; serious_python's framework relocation globs `libX.*.dylib` AND
+   `libX.dylib`, matches all three, and `lipo -create` dies "duplicate
+   architecture" — after which the SIMULATOR framework is silently never built
+   while the device slice still works. Collapse to one unversioned file and
+   `install_name_tool -id @rpath/libX.dylib`.
+3. **`.dylib`, never `.so`, for a LINKED library.** `create_xcframework_from_dylibs`
+   pre-sets the install-id when the extension is `so`, so
+   `reconcile_framework_install_names`' `[ "$oldid" != "$newid" ]` guard skips it,
+   the consumer's `LC_LOAD_DYLIB` is never rewritten, and the app dies at launch.
+   (`.so` is fine for a ctypes-LOADED lib — flet-libmagic/zbar/pq — because dyld
+   never sees an `@rpath` load command.)
+4. **The dylib must resolve its OWN dependency tree.** Under static, undefined
+   symbols were deferred to each consumer's extension link — which is what a long
+   `GDAL_LIBS`-style chain in the consumers pays for. A real dylib settles it once,
+   so put those libraries on the library's link line. Do NOT paper over it with
+   `-undefined dynamic_lookup`: that turns a link error into a dlopen crash and
+   puts the transitive copies back in every extension.
+5. **Consumers:** collapse the lib chain to the one library, DELETE
+   `-undefined dynamic_lookup`, and ADD `-Wl,-headerpad_max_install_names` —
+   serious_python rewrites each extension's dep from `@rpath/libX.dylib` to the
+   much longer `@rpath/opt.lib.libX.framework/opt.lib.libX`, setuptools links with
+   no padding, and on failure `flet build` STILL EXITS 0 having shipped an app with
+   no site-packages (reads on device as a bare `ModuleNotFoundError`).
+6. **Consumers need a ctypes preload shim** in `__init__.py`: flet relocates each
+   extension into its own framework while the dylib stays a plain file in
+   `opt/lib`, and nothing on a relocated extension's rpath resolves it, so load it
+   `RTLD_GLOBAL` first (with a `<name>.fwork` marker fallback). Precedents: `av`
+   (49 extensions, on the `pyav` branch), `pyarrow`, `pymupdf`.
+
+**Verify:** `file` → `Mach-O … dynamically linked shared library`; `otool -D` →
+`@rpath/libX.dylib`; `otool -L` on the lib → system libraries only; and on every
+consumer extension `nm -a <ext> | grep " [tT] _<RegisterFn>"` must be EMPTY while
+`otool -L` names `@rpath/libX.dylib`. A definition means a static lib crept back
+in and the registry is split again.
+
+**Watch for a downloads/ collision** when the library recipe and a Python-binding
+recipe wrap the same upstream project: a build.sh recipe's archive is named after
+the PROJECT (`gdal-<ver>.tar.gz` for `flet-libgdal`), which can equal the name
+PythonPackageBuilder derives for the bindings recipe (`gdal`). Fixed in forge by
+namespacing build.sh downloads per recipe; the tell is a patch failing with
+"File to patch: No file found" against a source tree that looks wrong.
+
+**FIRST decide whether a split is even a defect — most are not.** A duplicated
+static lib costs bytes; it costs *correctness* only when the API depends on state
+shared across calls. The discriminator, which settled every case in a 9-package
+audit of this index:
+
+> Does the library have a **register-then-look-up table**, a **one-shot process
+> init**, or a **thread pool**?
+
+- **Defect:** GDAL (`GDALAllRegister()` fills a table `GDALOpen()` later consults
+  by name), `sodium_init()`-style one-shot init, OpenMP/threaded runtimes
+  (several libomp/libiomp copies in one process is a known hang/abort hazard).
+- **Benign:** explicit-handle or stateless APIs, where every operand is a call
+  argument — BLAS/LAPACK, FreeType (`FT_Library`), libjpeg (caller-owned
+  `j_decompress_ptr`), libyaml (caller-owned structs), MuPDF (`fz_context`),
+  GEOS (`GEOS_init_r`). Absorbing these N times is a size problem only.
+
+**Splits AUDITED AND CONFIRMED BENIGN — do not re-flag these** (2026-08-27):
+
+| package | what is duplicated | why benign |
+| --- | --- | --- |
+| scipy | 13 extensions each with a whole OpenBLAS (32 MB of 67 MB native) | BLAS/LAPACK ABI passes everything as arguments; `flet-libopenblas` is built `USE_THREAD=0 NUM_THREADS=1`, so `blas_thread_init`/`exec_blas`/`GOMP_parallel` are absent from all 105 extensions and `openblas_set_num_threads` is compiled out — there is no setter whose effect could land in the wrong copy |
+| numpy | 2 copies of bundled f2c reference LAPACK (`lapack_lite`, `_umath_linalg`) | duplicated globals are f2c function-local statics only (per-call scratch + an idempotent cache of IEEE-754 machine constants both copies compute identically). Also `lapack_lite` is normally never even imported |
+| pillow | `MODES`/`RAWMODES` in `_imaging` + `_imagingft` | `const`, statically initialised, read-only; modes cross module boundaries as an int enum, never as a pointer into the table. Same shape in upstream's own wheels |
+| scikit-learn | vendored newrand `set_seed` in `_libsvm`, `_liblinear`, `_libsvm_sparse` | the seeder is always the caller, never a sibling module; official macOS PyPI wheel is byte-identical in shape |
+
+**`nm -gU` + `nm -u` alone produces FALSE NEGATIVES — `nm -a` is mandatory.** An
+extension that exports only its `PyInit_*` keeps every absorbed routine as a
+LOCAL symbol (`t` for text, `b` for bss), so both a "defined" and an "imported"
+probe return 0 and the library looks absent. This bit three packages in one
+audit (numpy's f2c LAPACK, matplotlib's entire FreeType, pynacl's
+`randombytes_sysrandom`). Use `nm -a <ext> | grep -cE ' [tT] <sym>$'`.
+
+Two more traps when censusing symbols: probing one or two names is unreliable
+because they may be inlined away (matplotlib's `FT_Init_FreeType` was inlined
+from module init — its absence was NOT evidence FreeType was absent), so census
+the whole family (`FT_`/`TT_`/`sfnt_`, `jpeg_`/`jinit_`, `cblas_`/`openblas_`)
+instead; and mangled C++ produces false hits (`grep -i 'FT_'` matched 14
+pybind11 template fragments like `MT0_FT_DpT1_`, and `goto_` matched numpy's own
+`_npyiter_goto_iterindex`).
+
+**Check the premise before auditing.** Two of nine audits were chasing a library
+the wheel does not contain: numpy is built `-Dblas=none -Dlapack=none` and links
+no OpenBLAS at all, and matplotlib vendors its own FreeType rather than
+consuming `flet-libfreetype`. A `flet-lib*` string in `meta.yaml` is not proof it
+reaches the wheel — confirm with `nm`/`METADATA` on the built artifact.
+
+---
+
 ## Recipe-tester app failures
 
 ### `ResolutionImpossible` — a package's `numpy` upper-cap can't be satisfied on a newer CPython

@@ -8,7 +8,11 @@ source:
   url: https://download.osgeo.org/proj/proj-{{ version }}.tar.gz
 
 build:
-  number: 10
+  # 11 builds iOS SHARED (see build.sh). A static libproj is copied into every
+  # extension that links it, so pyproj carried eight separate PROJ instances --
+  # each with its own proj.db search path, so `set_data_dir()` configured one of
+  # eight. Shared also lets libgdal and pyproj share a single PROJ.
+  number: 11
 # {% if sdk != 'android' %}
   script_env:
     LDFLAGS: '-undefined dynamic_lookup'
@@ -20,6 +24,45 @@ requirements:
   host:
     - flet-libtiff 4.7.0
     - flet-libcurl 8.11.0
+# {% if sdk in ['iphoneos', 'iphonesimulator'] %}
+    # Only needed to LINK the shared library: libcurl is built --with-openssl,
+    # and a real dylib has to resolve its own dependency tree rather than
+    # deferring it to each consumer's extension link.
+    - openssl >=3.0.15
+    - flet-libjpeg 3.0.90
+# {% endif %}
 
 about:
+  # A shared library CONTAINS what it links, and the two platforms link
+  # differently, so the licence differs with them.
+  #
+  # iOS has no shared libtiff/libcurl to link, so this dylib absorbs libtiff,
+  # libjpeg-turbo, libcurl, libpsl and OpenSSL -- none of them covered by PROJ's
+  # COPYING. Android links libtiff.so and libcurl.so by DT_NEEDED (verified on
+  # the published wheel) and absorbs nothing, so there the wheel is PROJ alone.
+  # Declaring the iOS set on both would tell an Android consumer they ship
+  # MPL-2.0 and Apache-2.0 code they do not have.
+  #
+  # The obligation is not new to the shared build: under the static one the same
+  # object code was pulled into each CONSUMER's extension, so it shipped inside
+  # pyproj's wheel -- and a Python-package recipe cannot attach licence files at
+  # all. Moving the embedding here is what makes it declarable.
+  #
+  # MPL-2.0 is the one with teeth: libpsl compiles in the Public Suffix List
+  # data. The per-platform split follows flet-libomp; the bundling of a
+  # compiled-in dependency's notice follows flet-libjq (oniguruma) and
+  # flet-libpsl (the Chromium DAFSA sources).
+# {% if sdk in ['iphoneos', 'iphonesimulator'] %}
+  license_file:
+    - COPYING
+    - licenses/LICENSE.libtiff.md
+    - licenses/LICENSE.libjpeg-turbo.md
+    - licenses/COPYING.curl
+    - licenses/COPYING.libpsl
+    - licenses/LICENSE.chromium
+    - licenses/LICENSE.openssl
+  license: MIT AND libtiff AND BSD-4.3TAHOE AND IJG AND BSD-3-Clause AND Zlib AND curl AND MPL-2.0 AND Apache-2.0
+# {% else %}
+  license_file: COPYING
   license: MIT
+# {% endif %}

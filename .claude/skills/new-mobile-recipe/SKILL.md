@@ -318,6 +318,35 @@ single wheel contains both. The *file* side splits the same way for free, becaus
 source-dir file shadows a recipe-dir file of the same name: build.sh stages the NDK notice
 as `LICENSE` on Android, and on iOS the recipe's own `LICENSE` is what remains.
 
+**The commonest trigger for that split is STATIC vs SHARED, and it is easy to miss: a
+shared library CONTAINS what it links, a static archive does not.** Switching a
+`flet-lib*` from static to shared therefore changes what its wheel embeds, and its licence
+with it — while the consumers' licences change in the opposite direction, because the code
+stopped being pulled into *their* extensions.
+
+`flet-libproj` is the worked example. Its iOS build is shared and absorbs libtiff,
+libjpeg-turbo, libcurl, libpsl and OpenSSL, none of which PROJ's own COPYING covers; its
+Android build links `libtiff.so` and `libcurl.so` by `DT_NEEDED` and absorbs nothing, so
+there it is plain MIT. Two consequences worth internalising:
+
+- **Check the direction of travel on any static→shared change.** The obligation usually
+  does not grow — nothing gets more copyleft by being linked dynamically — but it MOVES
+  between wheels, and the wheel it moves into has to declare it. It can also move somewhere
+  it *cannot* be declared: a PythonPackageBuilder recipe carries only upstream's own
+  licence and has no `about.license_file`, so third-party object code pulled into a Python
+  package's extensions ships with no notice at all. Moving that embedding down into a
+  build.sh recipe is what makes it declarable.
+- **Read what is actually inside, per platform.** `nm -a <lib> | grep " [tT] <marker>"` for
+  a marker symbol of each suspected dependency (`_TIFFClientOpen`, `_curl_easy_init`,
+  `_psl_builtin`, `_SSL_CTX_new`). On ELF, `DT_NEEDED` naming a library is proof it was
+  NOT absorbed — and a stripped `.so` gives no symbols at all, so read the dynamic section,
+  not the symbol table.
+
+Consumer-facing prose is a separate question, and usually the answer is nothing: `README.rst`
+says the note is for a permissive package carrying copyleft behind it, and is noise where the
+obligation is inert. File-level copyleft such as MPL-2.0 asks nothing of a consumer who does
+not modify the package.
+
 **Finding no licence is a hard build error**, not a warning — a warning would sit unread in
 a thousand-line log on a job that exits 0, which is exactly how every `flet-lib*` wheel came
 to ship with no notice while CI stayed green. The error names the directories searched, the
