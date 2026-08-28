@@ -91,5 +91,20 @@ if [ $CROSS_VENV_SDK != "android" ]; then
     otool -L "$PREFIX/lib/libproj.dylib"
 fi
 
-rm -rf $PREFIX/{bin,share}
+# Keep share/proj/proj.db -- PROJ's CRS database, the file that makes EPSG codes
+# resolve. Everything else under share/ (and all of bin/) goes: the init files,
+# JSON schemas and proj.ini are unused without the grids they reference, and
+# get_data_dir() looks for proj.db alone.
+_projdb="$PREFIX/share/proj/proj.db"
+if [ -f "$_projdb" ]; then
+    _keep="$(mktemp -d)"
+    mv "$_projdb" "$_keep/proj.db"
+    rm -rf $PREFIX/{bin,share}
+    mkdir -p "$PREFIX/share/proj"
+    mv "$_keep/proj.db" "$_projdb"
+    rmdir "$_keep"
+    echo "=== kept $(du -h "$_projdb" | cut -f1) proj.db ==="
+else
+    rm -rf $PREFIX/{bin,share}
+fi
 rm -rf $PREFIX/lib/{cmake,pkgconfig}
