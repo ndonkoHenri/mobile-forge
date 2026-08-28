@@ -332,7 +332,21 @@ the operational side.
 - **Verdict semantics.** `RESOLVE_FAIL` = pip couldn't resolve the pins for
   the mobile target under flet's default python — usually "recipe needs a
   republish for newer pythons", genuine signal. `INFRA` / `NO_RESULT` =
-  environment died, rerun the job. Anything else red = the example itself.
+  environment died, rerun the job. `ERROR_TEXT` / `EXPECT_FAIL` = the L1/L2
+  content checks (harness dumps the visible control tree; rules in
+  `tests/example-runner/overrides.toml`); `NO_CHECKS` = the checks sidecar
+  never arrived. Anything else red = the example itself.
+- **Content-checks calibration.** Before gating a new/edited example, run it
+  with `-f checks=report` — the would-be verdict rides in the detail column.
+  An example that DEMONSTRATES errors (validation demos, engine comparisons,
+  sandbox probes — 17 of the first 103 do) needs a scoped `error_allow`
+  regex, never a wildcard; anchor structurally where possible (regex/vs-re
+  exempts only the `re` column so the `regex` column still gates). The
+  full failure list lives in the `example-results-*` artifact's
+  `logs/<flat>-verdict.json` — the report detail truncates, so enumerate
+  from the sidecar before writing allowances. L1 matches crash-SHAPED text
+  only (`Traceback (…)`, `SomeError:`, uppercase FAIL); bare words like
+  "error" are deliberately unmatched.
 - **Cost datum (2026-08-25).** Warm android shard: 4 examples ≈ 18 min
   (~4.6 min each); budget constants in `detect_examples.py` assume 8
   (android) / 11 (ios) min ×1.5 — conservative on purpose (matplotlib-class
