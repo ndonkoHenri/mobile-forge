@@ -11,6 +11,14 @@ build:
   script_env:
     PROJ_VERSION: 9.5.0
     PROJ_DIR: '{platlib}/opt'
+# {% if sdk == 'android' %}
+    # Android only. iOS reads proj.db straight out of flet-libproj's
+    # opt/share/proj, which is a real directory inside the app; on Android that
+    # tree never reaches site-packages, so the database has to travel inside
+    # this package instead. PROJ_WHEEL is upstream's own switch for bundling it,
+    # and stage-proj-db.patch is what gives it something to bundle.
+    PROJ_WHEEL: '1'
+# {% endif %}
 # {% if sdk != 'android' %}
     # libproj is a real shared library on iOS now, and it resolves its own
     # dependency tree (tiff, jpeg, curl, ssl, crypto, psl) internally, so naming
@@ -36,3 +44,10 @@ requirements:
 patches:
   - mobile.patch
   - ios-libproj-preload.patch
+  - stage-proj-db.patch
+
+# Android only, and only meaningful with PROJ_WHEEL above: pyproj reads the
+# database through a real __file__ path, which inside Flet 0.86's
+# sitepackages.zip is not a path at all.
+extract_packages:
+  - pyproj

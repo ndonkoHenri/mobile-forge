@@ -1,0 +1,65 @@
+Stage PROJ's database into the wheel, so EPSG codes resolve on Android.
+
+On iOS `flet-libproj` ships proj.db in opt/share/proj and that directory is
+real inside the app, so pointing PROJ_DATA at it is enough. Android has no such
+route: Flet's copyOpt lifts only *.so out of a flet-lib* opt/ tree into
+jniLibs, and the rest of the tree does not reach site-packages at all --
+verified by unpacking an APK, whose sitepackages.zip contains pyproj/... and no
+opt/ entries whatsoever. So on Android the database has to live inside a real
+Python package, which `extract_packages` can then put on disk.
+
+pyproj already has the machinery: `get_package_data` ships
+`proj_dir/share/proj/*` when PROJ_WHEEL is set and that directory exists.
+Upstream fills it by building PROJ inside the source tree, which a cross build
+never does -- PROJ arrives prebuilt from flet-libproj, with PROJ_DIR pointing
+at its prefix. This patch adds the copy, so the existing packaging hook has
+something to find.
+
+Only proj.db is staged: the init files, JSON schemas and proj.ini beside it are
+useless without the datum grids they reference, and get_data_dir() looks for
+proj.db alone.
+
+--- a/setup.py
++++ b/setup.py
+@@ -226,12 +226,41 @@
+     )
+ 
+ 
++def stage_internal_proj_data() -> None:
++    """mobile-forge: copy PROJ's data into the tree so it lands in the wheel.
++
++    Upstream fills `pyproj/proj_dir` by building PROJ inside the source tree,
++    which the wheel-building CI does and a cross build does not: PROJ comes from
++    `flet-libproj`, already built, and `PROJ_DIR` points at its install prefix.
++    Without this, `get_package_data` below finds no `proj_dir` and silently
++    ships no database -- so `CRS.from_epsg` raises on device however the wheel
++    is configured.
++
++    Only `proj.db` is copied. The init files, JSON schemas and `proj.ini`
++    alongside it are useless without the datum grids they reference, and
++    `get_data_dir()` looks for `proj.db` alone.
++    """
++    if os.environ.get("PROJ_WHEEL") is None or INTERNAL_PROJ_DIR.exists():
++        return
++    proj_dir = os.environ.get("PROJ_DIR")
++    if not proj_dir:
++        return
++    source = Path(proj_dir) / "share" / "proj" / "proj.db"
++    if not source.exists():
++        return
++    target = INTERNAL_PROJ_DIR / "share" / "proj"
++    target.mkdir(parents=True, exist_ok=True)
++    shutil.copy2(source, target / "proj.db")
++    print(f"mobile-forge: staged {source} -> {target / 'proj.db'}")
++
++
+ def get_package_data() -> dict[str, list[str]]:
+     """
+     This function retrieves the package data
+     """
+     # setup package data
+     package_data = {"pyproj": ["*.pyi", "py.typed"]}
++    stage_internal_proj_data()
+     if os.environ.get("PROJ_WHEEL") is not None and INTERNAL_PROJ_DIR.exists():
+         package_data["pyproj"].append(
+             str(BASE_INTERNAL_PROJ_DIR / "share" / "proj" / "*")
