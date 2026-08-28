@@ -20,9 +20,13 @@ dependencies = [
 ```
 
 Both platforms read and write, and this is a deliberately small GDAL behind them: six vector
-drivers, no `proj.db`, no GDAL data directory. **Formats** and **Coordinate systems** below
-say what that rules out — GeoPackage is not one of the six, and a CRS has to be spelled as a
-proj-string rather than `EPSG:4326`.
+drivers and no GDAL data directory. **Formats** below says what that rules out — GeoPackage
+is not one of the six.
+
+EPSG codes do resolve, which they did not before: `flet-libproj` ships PROJ's database and
+pyogrio points PROJ at it. Automatic on iOS; on Android it needs [`pyproj`](../pyproj)
+installed and `extract_packages` set, for the reason **Coordinate systems** gives.
+Proj-strings need no database at all and are the portable choice for code that runs on both.
 
 Both platforms share one GDAL, so the wheels are small and near-identical: an iOS slice is
 0.6–0.7 MB compressed and 2.2–2.3 MB unpacked, against 0.6 MB and 1.9 MB for an Android
@@ -127,28 +131,41 @@ rather than trusting what you passed in.
 
 ### Coordinate systems
 
-**Write a CRS as a PROJ string or WKT, not as an EPSG code.** Resolving `"EPSG:4326"` means
-looking the code up in `proj.db`, and no such database reaches the device: neither the pyogrio
-wheels nor the `flet-libgdal` and `flet-libproj` wheels behind them carry one, on either
-platform, and the diagnostic `Cannot find proj.db` is compiled into Android's `libproj.so` and
-into every iOS extension that carries GDAL. Writing with `crs="EPSG:4326"` raises
-`pyogrio.errors.CRSError: Could not set CRS: EPSG:4326`, while
-`"+proj=longlat +datum=WGS84 +no_defs"` needs no lookup and works. Everything in this section
-was reproduced on a desktop by pointing `PROJ_DATA` at a directory holding an unusable
-`proj.db`, which is the condition the device is in.
+**A PROJ string or WKT always works** — it names a projection by its parameters, so it needs
+no database:
 
-What you give up is naming, not storing: a Shapefile written that way reads back as an unnamed
-`GEOGCS[...]`. GeoJSON reads back as `EPSG:4326` — that format is defined in WGS84, and the
-WKT compiled into GDAL for it carries `AUTHORITY["EPSG","4326"]`, so no lookup is needed to
-report it.
+```python
+write(..., crs="+proj=longlat +datum=WGS84 +no_defs")
+```
 
-**It reports `EPSG:4326` for a layer that is not in it, too.** A WKT carrying
-`AUTHORITY["EPSG","32630"]` does reach the file, as `"crs": { … "urn:ogc:def:crs:EPSG::32630"
-}` — but reading it back is a code lookup, so with no database `meta["crs"]` is `EPSG:4326`
-and nothing warns; the same file on a desktop reports `EPSG:32630`. A Shapefile has no such
-problem, because the `.prj` holds the WKT itself: that CRS came back as
-`PROJCS["WGS_84_UTM_zone_30N", …]` with no database anywhere. For anything but WGS84, write
-the Shapefile.
+**An EPSG code needs PROJ's database, and where that comes from differs by platform.**
+`flet-libgdal` resolves one shared PROJ for every consumer, so whichever package supplies the
+database supplies it for all of them.
+
+- **iOS: codes just work.** `flet-libproj` ships `proj.db` and `pyogrio/__init__.py` points
+  PROJ at it before the first extension import.
+- **Android: install [`pyproj`](../pyproj) and extract it.** The database cannot ride in
+  `flet-libproj` there, because Flet lifts only `*.so` out of a `flet-lib*` `opt/` tree, so it
+  travels inside pyproj — and a file inside Flet's `sitepackages.zip` is not a path PROJ can
+  open. Both halves are needed:
+
+  ```toml
+  dependencies = ["flet", "pyogrio", "pyproj"]
+
+  [tool.flet.android]
+  extract_packages = ["pyproj"]   # without this the database stays in the zip
+  ```
+
+  `extract_packages` is read from **your** pyproject and is never inherited from a
+  dependency, so nothing sets it on your behalf. Miss it and `crs="EPSG:4326"` goes on
+  raising `pyogrio.errors.CRSError: Could not set CRS: EPSG:4326`.
+
+**Without a database, a code is not just unavailable — it can be reported wrongly.** A WKT
+carrying `AUTHORITY["EPSG","32630"]` reaches a GeoJSON file as
+`"crs": { … "urn:ogc:def:crs:EPSG::32630" }`, but reading it back is a code lookup, so
+`meta["crs"]` comes back `EPSG:4326` and nothing warns. A Shapefile is immune, because the
+`.prj` holds the WKT itself. That is the strongest argument for supplying the database on
+both platforms rather than relying on proj-strings and hoping the round trip is faithful.
 
 And nothing here reprojects: **the driver writes the coordinates you hand it under whatever
 CRS you name.** UTM easting and northing written to GeoJSON with a UTM CRS came back
@@ -260,11 +277,11 @@ keeps the driver set to the handful this page names.
 - **Formats:** re-derive the registered drivers from the binary — `RegisterOGR*` in
   `libgdal.so` is the list — and re-measure the field-name, string, integer and datetime rows
   rather than assuming a GDAL bump preserved them.
-- **PROJ data:** confirm the chain still ships no `proj.db` and none is embedded in
-  `libproj.so` — `flet-libproj` 9.5 predates PROJ's `EMBED_RESOURCE_FILES`. If one ever
-  arrives, EPSG codes start resolving and the CRS advice needs rewriting, not relaxing. A
-  desktop stands in for the device here: an empty file named `proj.db` in a directory named
-  by `PROJ_DATA` makes PROJ fail the same way, warnings and `CRSError` included.
+- **PROJ data:** confirm `flet-libproj` still ships `opt/share/proj/proj.db` and that
+  `pyogrio/__init__.py` still points `PROJ_DATA` at it — the wheel size is the cheap tell,
+  since the database is 9.26 MB. On Android confirm the other route instead: pyproj's wheel
+  carrying `proj_dir/share/proj/proj.db`, and `extract.zip` in a built APK being ~9.6 MB
+  rather than 22 bytes, which is what an unextracted build looks like.
 - **Size:** re-measure the wheels, the native chain and the `pyogrio/tests` payload.
 
 ### Coverage gaps
