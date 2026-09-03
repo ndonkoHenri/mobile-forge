@@ -122,6 +122,36 @@ If upstream hardcodes `-L/usr/lib/X` somewhere, write a `mobile.patch` to strip 
 
 ---
 
+### iOS `Undefined symbols: _SecTrustEvaluateWithError / _iconv / _uidna_nameToASCII_UTF8 / _kCFTypeArrayCallBacks` linking a prebuilt Apple-built static lib
+
+**Cause:** a prebuilt static archive built for iOS with Apple's native TLS trust store (`USE_APPLE_SECTRUST`) and/or Apple IDN (`USE_APPLE_IDN`) — e.g. curl-impersonate's `libcurl-impersonate.a` — has undefined references into Apple **system** libraries that its objects do NOT carry. When you statically link that `.a` into a Python extension, those symbols surface as `ld: Undefined symbols for architecture arm64`. The symbol → library map:
+
+- `_SecTrust*`, `_SecCertificate*`, `_SecPolicy*` → `-framework Security`
+- `_kCFType*`, `_CFRelease`, `CFString*`, `CFArray*` → `-framework CoreFoundation`
+- `_iconv`, `_iconv_open`, `_iconv_close` → `-liconv`
+- `_uidna_*` (ICU International Domain Names) → `-licucore`
+
+(The real-macOS build of the same package usually does NOT need these — macOS uses a different verify/IDN path — so upstream's link args omit them, and this is iOS-only.)
+
+**Fix:** append the frameworks/libs to the extension's link args, gated to iOS. They resolve from the SDK sysroot (`.tbd` stubs in `usr/lib` + `System/Library/Frameworks`) with no extra `-L`/`-F`. In a cffi recipe this is a `mobile.patch` hunk on the `extra_link_args` list; in a `setup.py`/CMake recipe it can also ride in `script_env` `LDFLAGS`. Precedent: `recipes/curl-cffi/patches/mobile.patch` (branch `curl-cffi`) adds `["-framework","Security","-framework","CoreFoundation","-liconv","-licucore"]` for the iOS slice only.
+
+---
+
+### `source.url` prebuilt tarball unpacks with the top-level files MISSING (`.a`/`.so` gone, only `include/…` present)
+
+**Cause:** forge's `unpack_source` defaults to `strip=1` (`member.path.split("/", 1)[1]`), which assumes a single top-level wrapper directory. A prebuilt **release** tarball often has its files at the archive **root** (`libX.a`, `libX.so`, `include/X/…` with no wrapper dir). At `strip=1` the root-level files have no `/` → `split(...)[1]` IndexErrors → they are silently **dropped**, while `include/x.h` → `x.h`. build.sh then can't find the `.a`.
+
+**Symptoms:** build.sh's own guard (`[ ! -f libX.a ]`) trips, or a downstream link fails with the lib missing, even though the tarball clearly contains it.
+
+**Fix:** set `strip: 0` on the source object so forge extracts verbatim:
+```yaml
+source:
+  url: https://.../libX-<arch>.tar.gz
+  strip: 0
+```
+
+---
+
 ### `ImportError: dlopen failed: library "/abs/path/.../libpython3.12.so" not found` (Android, at runtime)
 
 **Cause:** The Android `libpython3.12.so` from the `flet-dev/python-build` tarball is built without a SONAME (no `-Wl,-soname,libpython3.12.so` at libpython link time). When a recipe uses CMake's `target_link_libraries(... Python::Python)` to link explicitly against libpython (which pyzmq does on Android via `EXTRA_PYTHON_COMPONENT=Development.Embed`), the linker can't use a SONAME and falls back to using the input argument as DT_NEEDED. With `-DPython_LIBRARY=<absolute path>`, that path gets embedded verbatim. At runtime, Android's loader looks for the absolute build-host path and fails.
@@ -840,6 +870,38 @@ run (sherpa's setup.py falls back to a bounded `make -j4`). **Related trap:**
 (`SimplePackageBuilder.compile`, build.py:997); in a PythonPackageBuilder
 `script_env` it raises `KeyError: 'CPU_COUNT'` when forge `.format()`s the value
 (build.py:576-580). sherpa-onnx (adversarial-review catch).
+
+---
+
+### A vendored native lib is built by setup.py's OWN cmake call — green build, host-configured library
+
+**Cause:** the sdist vendors a C library (`deps/<lib>/`) and `build_ext` shells out to
+`cmake` with an argument list that is a **literal in setup.py**, then links the static
+result via `extra_objects`. No CMake build backend is involved, so `CMAKE_ARGS` (which
+only scikit-build-core reads) is ignored and the vendored lib configures for the build
+host. Nothing errors: repeated arch (macOS arm64 host → `ios_arm64` target) links
+without complaint, and the configure-time feature probes answer for macOS. The wheel is
+green and wrong — either dead at first use, or quietly missing whatever the probes
+turned off. pycares → c-ares 1.34.6.
+
+**Fix:** patch the arg list to be extensible and fill it from a recipe `script_env` var:
+
+```python
+cmake_args.extend(shlex.split(os.environ.get('FORGE_CMAKE_ARGS', '')))
+```
+
+Append **after** upstream's own platform block — repeated `-D` on a cmake command line
+is last-one-wins, so this overrides e.g. `-DCMAKE_OSX_DEPLOYMENT_TARGET=10.12` without
+editing upstream's line. Then the usual lanes (`{NDK_ROOT}/build/cmake/android.toolchain.cmake`
++ `{ANDROID_ABI}` + `{ANDROID_API_LEVEL}`; `-DCMAKE_SYSTEM_NAME=iOS` + `{{ sdk }}` /
+`{{ arch }}` / `{{ sdk_version }}`) and `requirements.build: [cmake]`.
+
+**Confirm from the log, not the exit code:** `-- Check for working C compiler:` must name
+the cross compiler (NDK clang / `arm64-apple-ios*-clang`), and the feature macros you
+depend on must have resolved for the target — grep the generated config header under
+`build/<py>/<pkg>/<ver>/build/temp.*/`. For pycares that is `HAVE___SYSTEM_PROPERTY_GET 1`
+and `CARES_THREADS 1` on Android (`import pycares` raises `RuntimeError` outright if
+`ares_threadsafety()` is false, which is a mercy — most losses of this class are silent).
 
 ---
 
@@ -1837,6 +1899,35 @@ build a device-emulating desktop venv containing ONLY the wheel's declared deps
 
 ---
 
+### Android only: a library that reads *system configuration* through a Java-only API silently degrades instead of failing
+
+**Cause:** Android 8 removed most `net.*` / config system properties an app can read, and
+the replacements live behind Java APIs (`ConnectivityManager`, `TelephonyManager`, …). A C
+library that supports Android at all usually reaches them through JNI, and needs the app to
+hand it a `JavaVM*` first. Nothing in the Flet/serious-python stack does that, and no pure
+CPython wheel can — so the discovery returns nothing, and libraries of this class then
+**seed a default rather than erroring**, leaving a working object that cannot do its job.
+
+pycares/c-ares is the worked example: `ares_init_sysconfig_android()` needs
+`ares_library_init_jvm()` + `ares_library_init_android()` (neither exposed by pycares),
+falls back to the removed `net.dns1`…`net.dns8` properties, returns `ARES_EFILE` — and
+`ares_init.c` swallows that and installs `127.0.0.1:53` as the sole nameserver. So
+`pycares.Channel()` constructs fine, `channel.servers == ['127.0.0.1:53']`, and every
+lookup fails with `DNSError: (11, 'Could not contact DNS servers')`. iOS is unaffected —
+there c-ares `dlsym`s Apple's configd SPIs out of libSystem and gets the real resolvers.
+
+**Tell:** the same code works on iOS and fails on Android, the error is a *connection*
+failure rather than a configuration error, and the object's config property reads back a
+loopback/default value.
+
+**Fix:** there is no wheel-side fix — configure it explicitly from Python
+(`pycares.Channel(servers=[...])` / `aiodns.DNSResolver(nameservers=[...])`), or read the
+real values on the Java side with pyjnius and pass them in. Document it in the recipe
+README; do not encode a public default in the wheel. A recipe test cannot assert any of
+this (it differs per platform and network) — surface it with a consumer verify-app.
+
+---
+
 ### insightface: `PermissionError: [Errno 13] … '/data/.insightface'` (FaceAnalysis init, Android)
 
 **Cause:** `FaceAnalysis()` defaults its model root to `~/.insightface`, and in
@@ -2074,6 +2165,43 @@ about:
 
 Note an **unset** `license_file` still means "discover for me" — only an empty **list** is
 the opt-out.
+
+**The prebuilt-repackage case: upstream ships no notice ANYWHERE.** A recipe that repackages
+a third-party *binary* release often gets a tarball holding nothing but the library and its
+headers — no `LICENSE`, no `COPYING`, nothing to point `license_file` at. `[]` is the wrong
+reflex here: the wheel really does contain that object code, so the notice has to come from
+somewhere, and the schema says so — *"or to the recipe directory, for a notice the upstream
+archive doesn't ship"*. **Vendor the notices into `recipes/<name>/licenses/`** — a folder
+alongside `tests/` and `examples/`, whose entire contents ship whatever each file is named:
+
+```
+recipes/flet-libcurl-impersonate/
+  licenses/COPYING.curl  licenses/LICENSE.boringssl  licenses/LICENSE.zstd  ...
+```
+
+```yaml
+about:
+  license: curl AND MIT AND Apache-2.0 AND BSD-3-Clause AND Zlib   # no license_file needed
+```
+
+No `license_file` list: the folder is the list, so it cannot fall out of step on a bump.
+The folder name is stripped from the destination, so notices land at
+`dist-info/licenses/<name>`.
+
+Getting the component list right is the actual work, and a mega-archive will not tell you
+directly: `ar t` on a `ld -r` blob lists one member. Recover it from the symbols the linker
+left behind, then corroborate against upstream's build config:
+
+```bash
+llvm-nm -a libfoo.a | awk '$2=="-"||$2=="f"{print $3}' | sort -u   # STT_FILE syms per project
+strings libfoo.a | grep -oE '/build/deps/src/[a-z0-9-]+' | sort | uniq -c
+```
+
+Two traps when picking each file, both the libiconv trap in different directions: a project's
+`LICENSE` may be a stub redirect (nghttp2's is 12 bytes, "See COPYING"), and a dual-licensed
+project's `COPYING` may be the arm we do *not* take (zstd's is the full GPL-2.0; the BSD arm
+is in `LICENSE`). Fetch every file at the **pinned version tag**, never `main` — the texts
+carry copyright year ranges that drift.
 
 **Related:** `about.license_file` naming a file that isn't there raises too (a typo or a
 moved file, not a preference). Changing licence metadata does not reach pypi.flet.dev until

@@ -140,6 +140,15 @@ for i in $(seq 1 30); do grep EXIT "$DATA/Library/Caches/console.log" 2>/dev/nul
 
 12. **Verify the staged tests + the on-device test COUNT — staging can fail silently.** `stage_recipe.sh` wipes and re-stages `recipe_tests/`; if the invocation ever fails without you noticing (a scripted loop with a bad variable — zsh does NOT word-split unquoted `$VAR` like bash, so a `for r in $RECIPES`-style loop can pass the whole list as ONE argument), the PREVIOUS recipe's tests are still staged and run happily, reporting "N passed" for the wrong package. Two cheap checks after staging: `ls tests/recipe-tester/recipe_tests/` shows YOUR test files, and the "N passed" in console.log matches your recipe's test count. (Bit during the h5py→keras loop: the same 4 stale h5py tests "passed" three times.) **Stronger still — verify the built APK's CONTENTS, not just `recipe_tests/`:** a build that *fails* can leave a STALE `build/apk/recipe-tester.apk` that installs the wrong app entirely. `unzip -l build/apk/recipe-tester.apk` should show your recipe's test `.py` inside `app.zip` AND (for a native recipe) `lib/<abi>/lib*.so` for its libs. Caught an opaque run that silently installed a stale pysodium APK and reported "2 passed" for the wrong package. When in doubt nuke `build/apk` too, not just `build/site-packages`.
 
+12a. **zsh eats `:` after a bare `$var` — `"$ref:path"` is a git-query landmine.** zsh applies
+    history-style modifiers to an unbraced parameter, so `"$r:recipes/foo/meta.yaml"` parses `:r`
+    (remove-extension) and expands to `refs/heads/my-branchecipes/foo/meta.yaml`. `git show` on
+    that returns nothing, exits non-zero, and a `2>/dev/null` loop reports a confident, wrong
+    **negative** across every ref. Always brace it: `"${r}:path"`. This produced a false "that
+    fix exists on no branch" claim about work that was sitting on `examples-and-docs`. General
+    rule: **a search that returns a surprising negative is a bug until proven otherwise** — spot-check
+    one case you are certain about before reporting the absence as evidence.
+
 13. **`--python-version` only exists in flet-cli 0.86+, and `uvx` can hand you 0.85.** Flet 0.86 is stable on PyPI now, so `--prerelease allow` is harmless but no longer required. The trap is the invocation: `uvx --with flet-cli --with flet flet …` infers the *tool* package from the command name, and a stale uv tool cache can resolve `flet` 0.85.2 — whose CLI has no `--python-version` and which pins serious_python **1.0.0** (no #223 reconcile, so every iOS recipe with interdependent dylibs would fail). It exits with `flet: error: unrecognized arguments: --python-version`, which reads like a flet bug rather than a resolution problem. Check `uvx … flet --version` first; `uvx --from flet-cli flet …` resolves unambiguously. For the record, the template pin per release: 0.85.2 → serious_python 1.0.0, 0.86.0 → 4.3.2, 0.86.1 → 4.3.3, 0.86.5 → 4.5.1 (`curl -sL https://github.com/flet-dev/flet/releases/download/v<ver>/flet-build-template.zip` then grep the pubspec).
 
 14. **After an iOS build, check the `.app`'s bundled site-packages actually contains your package.** `flet build ios-simulator` reports success and exits 0 even when serious_python's site-packages sync **aborted**, because the failure is not propagated. The plugin's `dist_ios` lives in the shared pub cache, so the SwiftPM resource bundle then ships whatever the last *successful* build of any project left there — an app carrying a different recipe's packages entirely, which on device is an ordinary-looking `ModuleNotFoundError`. One line, worth it every time:
@@ -187,7 +196,15 @@ Upstream packages now publish cibuildwheel-built iOS/Android wheels to PyPI (cp3
 only). They are live pip candidates in every 0.86 build, **but while a forge recipe
 exists on pypi.flet.dev it deterministically shadows them** — pip's sort at equal
 versions is tag-priority (forge `android_24` > official `android_21`) then build tag
-(forge `-1-` > none). To force the official wheel on-device without touching the index:
+(forge `-1-` > none). **Only at equal versions.** Version is compared before any tag, so
+an upstream release the recipe has not caught up to wins outright — and since upstream
+publishes arm64-v8a alone, the result is a MIXED app: their arm64 beside forge's x86_64,
+one version apart. A stale recipe is the failure mode here, not a resolution quirk.
+Measured 2026-08-31 with `pip download --only-binary :all: --platform
+android_24_arm64_v8a --python-version 313` against both indexes: `pyzmq==27.1.0` (same
+platform tag, build tag alone between them) and `lru-dict==1.4.1` (`android_24` vs
+`android_21`) both resolve to the forge wheel; unpinned `pyzmq` resolves to upstream's
+newer 27.2.0. To force the official wheel on-device without touching the index:
 retag a downloaded copy into a find-links dir with a HIGH build tag — and on Android
 also lift the platform tag past forge's —
 
