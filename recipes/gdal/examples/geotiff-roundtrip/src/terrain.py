@@ -28,8 +28,8 @@ BLOCK = 256
 ORIGIN = (10.0, 60.0)
 PIXEL = 0.001
 PROBE = (10.250, 59.800)
-# A proj-string, not "EPSG:4326": an authority code needs proj.db and nothing in this
-# chain ships one. The EPSG row is run anyway, so the difference shows on screen.
+# A proj-string needs no PROJ database, so it behaves the same everywhere; the EPSG row
+# beside it shows whether the database reached this device.
 CRS_TEXT = "+proj=longlat +datum=WGS84 +no_defs"
 POINTS = [
     ("north", 10.100, 59.900),
@@ -85,9 +85,8 @@ REFERENCE = surface(SIZE)
 def footprint():
     """How many of the six osgeo extensions are mapped, and how many bytes they occupy.
 
-    Read off sys.modules and the files behind it rather than assumed. This is the number
-    that separates the two platforms: the same import maps the same four modules on both,
-    and they weigh about 2.9 MB on Android against about 77 MB on iOS.
+    Read off sys.modules and the files behind it rather than assumed. The bytes are the
+    SWIG wrappers only: GDAL itself is the shared libgdal, which this does not count.
     """
     total = 0
     loaded = 0
@@ -103,11 +102,7 @@ def footprint():
 
 
 def versions():
-    """The GDAL and PROJ version strings.
-
-    On iOS these are the first calls into a PROJ that was absorbed into _osr at link time,
-    so this is where a broken static link shows up first.
-    """
+    """The GDAL and PROJ version strings, read from the shared libgdal and libproj."""
     return (
         f"GDAL {gdal.VersionInfo('RELEASE_NAME')} - PROJ "
         f"{osr.GetPROJVersionMajor()}.{osr.GetPROJVersionMinor()}."
@@ -141,7 +136,7 @@ def exception_modes():
 
 
 def registry():
-    """The live driver tables of _gdal and _ogr, which on iOS are separate images.
+    """The one driver registry in libgdal, asked through _gdal and through _ogr.
 
     Asked rather than assumed: a phone registers a small fraction of what a desktop does,
     and the two counts differ because ogr sees only the vector-capable drivers.
@@ -238,8 +233,8 @@ def spatial_rows():
     """A CRS built in _osr and attached to _gdal datasets as a string and as an object.
 
     The two routes are the interesting pair: ExportToWkt() sends text across the module
-    boundary, SetSpatialRef() sends the object itself. On Android both reach one shared
-    libgdal; on iOS they cross between two separately linked copies of it.
+    boundary, SetSpatialRef() sends the object itself. The comparison shows whether both
+    land on the same CRS.
     """
     srs = osr.SpatialReference()
     srs.SetFromUserInput(CRS_TEXT)

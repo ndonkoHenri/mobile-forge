@@ -19,15 +19,17 @@ What it demonstrates:
   characters — DBF's limit, and it says so in a `RuntimeWarning` — while GeoJSON keeps every
   name and silently narrows the 64-bit integer column to `int32`. No attribute *value* is
   lost either way.
-- **A CRS written as a PROJ string rather than an EPSG code.** Naming a projection by
-  authority code is a lookup in `proj.db`, which these wheels do not carry. GeoJSON reads
-  the layer back as `EPSG:4326` from the driver's own compiled-in WKT; the Shapefile's
-  `.prj` comes back an unnamed `GEOGCS`.
+- **A CRS written as a PROJ string rather than an EPSG code.** An authority code is a
+  lookup in PROJ's database, which iOS has unconfigured but Android gets only from an
+  installed, extracted `pyproj` — see [Coordinate systems](../../README.md#coordinate-systems).
+  A PROJ string needs no database, so this app runs unchanged on both. GeoJSON reads the
+  layer back as `EPSG:4326` from the driver's own compiled-in WKT; without a database, as on
+  Android here, the Shapefile's `.prj` comes back an unnamed `GEOGCS`.
 - **What the driver table proves, and what it does not.**
   [`list_drivers()`](https://pyogrio.readthedocs.io/en/latest/api.html#pyogrio.list_drivers)
   reads the registry through pyogrio's `_ogr` extension; reads and writes happen in `_io`.
-  Those are two views of one library on Android and two statically linked copies on iOS, so
-  a healthy-looking table is not on its own evidence that a round trip will run. That is why
+  Both link one shared libgdal, but listing never exercises `_io`, so a healthy-looking
+  table is not on its own evidence that a round trip will run. That is why
   the app shows the registry and the round trip side by side rather than either alone.
 - **Compute off the UI thread.** Each run goes through
   [`page.run_thread(...)`](https://flet.dev/docs/controls/page/#flet.Page.run_thread) with

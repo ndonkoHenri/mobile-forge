@@ -13,11 +13,10 @@ Both platforms read and write. On both this is a deliberately small GDAL: six ve
 drivers, no `GDAL_DATA`, no GEOS and no libcurl, and none of that announces
 itself at import — **Drivers** and **Coordinate systems** below say what it rules out.
 
-EPSG codes do resolve, which they did not before: `flet-libproj` ships PROJ's database and
-fiona points PROJ at it. That is automatic on iOS; on Android it needs
-[`pyproj`](../pyproj) installed and `extract_packages` set, for the reason **Coordinate
-systems** gives. Proj-strings need no database at all and are the portable choice for code
-that has to run on both.
+EPSG codes resolve too: `flet-libproj` ships PROJ's database and fiona points PROJ at it.
+That is automatic on iOS; on Android it needs [`pyproj`](../pyproj) installed and
+`extract_packages` set, for the reason **Coordinate systems** gives. Proj-strings need no
+database at all and are the portable choice for code that has to run on both.
 
 Both platforms resolve one shared GDAL, so the wheels are small and near-identical: an iOS
 slice is 1.0 MB compressed and 3.1–3.2 MB unpacked, against 0.84–0.96 MB and 1.8–2.6 MB for
@@ -137,7 +136,8 @@ is what `fiona.open` will accept; `with fiona.Env() as env: env.drivers()` is OG
 vector-capable subset of the registry, and it returns **six** names, not five. The sixth is
 `MEM`, which registers with `DCAP_VECTOR` — but fiona's static table has no `MEM` entry, so
 `fiona.open(..., driver="MEM")` raises `DriverError: unsupported driver: 'MEM'` before any
-native call.
+native call. `supported_drivers` is that static table intersected with `Env().drivers()`,
+once, at import, by `_filter_supported_drivers()` in `fiona/drvsupport.py`.
 
 ### Coordinate systems
 
@@ -183,8 +183,7 @@ with 0 geometry-type, integer and string mismatches, and worst coordinate residu
 
 [`fiona.transform`](https://fiona.readthedocs.io/en/stable/fiona.html#module-fiona.transform)
 reprojects between proj-string CRSes on both platforms. It is the one module a plain
-`import fiona` does not load, so reaching for it is a decision rather than a side effect —
-see **App size** for what that costs on iOS.
+`import fiona` does not load, and on Android the only one that needs `libc++_shared.so`.
 
 To use your **own** database instead — a newer PROJ release, or one carrying datum grids —
 set `PROJ_DATA` to the directory holding it before importing fiona, from
@@ -226,8 +225,8 @@ Android: 0.84–0.96 MB of compressed wheel and 1.8–2.6 MB unpacked per ABI, o
 21–23 MB of shared native libraries per ABI that come with GDAL. iOS: 1.0 MB compressed and
 3.1–3.2 MB unpacked per slice, on top of `flet-libgdal`'s own 9.6–10.4 MB compressed
 (27.6–29.3 MB unpacked), which is one shared `libgdal.dylib` for every consumer in the app.
-Plain `import fiona` maps seven of the eight, and the two platforms are now within a factor
-of two of each other for the same work — about 2 MB of native code on Android arm64-v8a
+Plain `import fiona` maps seven of the eight, and the two platforms are within a factor of
+two of each other for the same work — about 2 MB of native code on Android arm64-v8a
 against about 2.9 MB on the iOS device slice, plus the one shared `libgdal` each.
 
 There is nothing here worth naming to
@@ -239,10 +238,6 @@ the app does not need every ABI; that lever is worth more here than the wheel fi
 suggest, because the 21–23 MB of native library is carried once per ABI. These numbers
 describe the package payload, not the amount added to the final APK or IPA; packaging and
 compression determine that.
-
-Budget build-machine time and disk too. Each iOS slice pulls a roughly 113 MB GDAL wheel
-that is one half-gigabyte static archive plus headers, and Flet's cleanup then deletes all
-of it, so expect a slow first `ipa` or `ios-simulator` build.
 
 ### Android
 
@@ -260,15 +255,16 @@ expected here and stops nothing.
 ### iOS
 
 All eight extensions link one `libgdal.dylib`, the same way Android's link one `libgdal.so`,
-so there is a single driver registry and a single configuration:
-[`fiona.Env()`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.Env) options reach
-the code doing the I/O, and nothing on this page needs a platform caveat.
+so there is a single driver registry, a single configuration and a single PROJ, shared with
+[`gdal`](../gdal), [`rasterio`](../rasterio), [`pyogrio`](../pyogrio) and
+[`pyproj`](../pyproj): [`fiona.Env()`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.Env)
+options reach the code doing the I/O.
 
 The delivery is the only iOS-specific part, and it is invisible from Python. flet relocates
-each extension into its own `*.framework` bundle while the dylib stays a plain file in
-`opt/lib`, so `fiona/__init__.py` loads it `RTLD_GLOBAL` before the first extension import —
-without that, the import fails with `Library not loaded: @rpath/libgdal.dylib`. The shim is
-inert on Android and on a desktop.
+each extension into its own `*.framework` bundle while the dylibs stay plain files in
+`opt/lib`, so `fiona/__init__.py` loads `libproj.dylib` and then `libgdal.dylib`
+`RTLD_GLOBAL` before the first extension import. The preload is inert on Android and on a
+desktop.
 
 ### Other considerations
 
@@ -277,11 +273,11 @@ install shape above, and a desktop fiona installed by hand is a different packag
 macOS wheel bundles its own — older — GDAL and its own `proj_data`, and reported 17 entries
 in `supported_drivers`, 55 from `Env().drivers()` and a working `CRS.from_epsg(4326)`.
 Twelve of those 17, including `CSV`, `GML`, `GPKG`, `GPX`, `OpenFileGDB` and `SQLite`, are
-absent from the mobile registry. To approximate the device's *data* situation locally,
-run with `GDAL_DATA`, `PROJ_DATA` and `PROJ_LIB` pointed at an empty directory. That proxy is
-worth trusting because it was checked: the device reproduced those numbers exactly. It is how the
-CRS findings above were established. It will not show you the driver set, and on iOS it will
-not show you the split.
+absent from the mobile registry. To approximate a device with no PROJ database — Android
+without an extracted `pyproj` — run with `GDAL_DATA`, `PROJ_DATA` and `PROJ_LIB` pointed at
+an empty directory; fiona leaves a `PROJ_DATA` you set alone. That proxy is worth trusting
+because it was checked: the device reproduced those numbers exactly. It will not show you
+the driver set.
 
 Leave Flet's
 [compilation and cleanup](https://flet.dev/docs/publish/#compilation-and-cleanup) on.
@@ -303,18 +299,9 @@ compiling to `.pyc` is safe and the default cleanup only takes Cython headers.
   [`fiona.open`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.open) calls
   [`driver_from_extension`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.drvsupport.driver_from_extension),
   which builds its extension map by asking every driver in `supported_drivers` for its
-  metadata and raises `FionaValueError: Could not find driver '<name>'` the moment
-  `GDALGetDriverByName` returns NULL — so on iOS the convenient form fails inside the empty
-  table before it ever reaches your file. On a working platform the same omission gives
-  `ValueError: Unable to detect driver. Please specify driver.` for an extension it does not
-  recognise, so the two failures look nothing alike.
-
-- **`fiona.supported_drivers` is filtered at import — against the wrong table on iOS.**
-  `fiona/drvsupport.py` runs `_filter_supported_drivers()` at module scope, intersecting
-  fiona's static table with `Env().drivers()`, which loops `OGRGetDriverCount()` inside
-  `fiona._env`. On Android that is the same registry `fiona.open` uses. On iOS it is not, so
-  an app that checks the driver list before writing gets a green light from a table
-  `fiona.open` never consults.
+  metadata, and an extension none of them claims gives
+  `ValueError: Unable to detect driver. Please specify driver.` — an error that names neither
+  the file nor the driver you meant.
 
 - **`fiona.driver_count()` is not the number of drivers you can use.** It is
   `GDALGetDriverCount() + OGRGetDriverCount()` evaluated inside `fiona._env`, so it counts
@@ -359,33 +346,36 @@ compiling to `.pyc` is safe and the default cleanup only takes Cython headers.
 
 ### Recipe shape
 
-Two recipes: `flet-libgdal` builds GDAL, this one consumes it. `patches/mobile.patch`
-explains its own hunks and `meta.yaml` comments the Android/iOS `GDAL_LIBS` split next to
-it, so what is left here is shape and the bump checklist.
+Two recipes: `flet-libgdal` builds GDAL, this one consumes it. `patches/mobile.patch` and
+`patches/ios-libgdal-preload.patch` explain their own hunks and `meta.yaml` comments the
+iOS link flags, so what is left here is shape and the bump checklist.
 
 **Almost everything this page warns about is a `flet-libgdal` decision, not a fiona one.**
-The eleven-driver registry, the missing `GDAL_DATA` and `proj.db`, the absent GEOS and
-libcurl and the iOS static-only link all come from that recipe and from `flet-libproj`. A
+The eleven-driver registry, the missing `GDAL_DATA`, the absent GEOS and libcurl, and where
+`proj.db` lands on each platform all come from that recipe and from `flet-libproj`. A
 `flet-libgdal` bump can invalidate most of this README without a line changing here, which
 is why the pin in `meta.yaml` is exact.
 
 `flet-libgdal` is `requirements.host` rather than `requirements.host_build`, so it ships and
-lands in `Requires-Dist` on both platforms. That is load-bearing on Android, where the
-extensions resolve `libgdal.so` by bare soname at load, and redundant but harmless on iOS,
-where the wheel's payload is a static archive plus headers that Flet's cleanup deletes.
+lands in `Requires-Dist` on both platforms. That is load-bearing on both: its shared library
+is what reaches the device, and the extensions resolve it at load — `libgdal.so` by bare
+soname on Android, `@rpath/libgdal.dylib` on iOS.
 
-**`flet-libgdal` must stay SHARED on iOS, and `GDAL_LIBS` must stay `gdal`.** A static
-`libgdal.a` is copied into every extension that links it, giving each its own GDAL — its own
-driver registry and its own configuration. fiona registers in `_env` and resolves driver
-names in `ogrext`, so those would stop being the same table: `Env().drivers()` lists a full
-registry while every `fiona.open` fails. The shared library is what makes them one table, and
-it is also why `GDAL_LIBS` is a single entry — the dylib resolves proj, tiff, jpeg, curl,
-ssl, crypto and psl internally, so naming that chain here would link it again per extension.
+**`flet-libgdal` must stay SHARED, and `GDAL_LIBS` must stay `gdal` on both platforms.** A
+static `libgdal.a` is copied into every extension that links it, giving each its own GDAL —
+its own driver registry and its own configuration. fiona registers in `_env` and resolves
+driver names in `ogrext`, so those would stop being the same table: `Env().drivers()` lists a
+full registry while every `fiona.open` fails. The shared library is what makes them one
+table, and it is also why `GDAL_LIBS` is a single entry — the shared `libgdal` resolves its
+own dependencies (the iOS dylib carries tiff and jpeg internally and links only `libproj`
+beyond the system), so naming that chain here would link it again per extension.
 
-`-undefined dynamic_lookup` must stay off for the same reason: with a real dylib an
-unresolved symbol is a defect that has to fail at link, not at `dlopen` on a device.
-[`rasterio`](../rasterio), [`pyogrio`](../pyogrio) and [`gdal`](../gdal) share all of this;
-change one and re-check the other three.
+`-undefined dynamic_lookup` must stay off: with a real dylib an unresolved symbol is a defect
+that has to fail at link, not at `dlopen` on a device. `-Wl,-headerpad_max_install_names`
+must stay on: serious_python rewrites `@rpath/libgdal.dylib` to a longer framework path, and
+without the padding `install_name_tool` fails and `flet build` still exits 0, shipping no
+site-packages. [`rasterio`](../rasterio), [`pyogrio`](../pyogrio) and [`gdal`](../gdal)
+share all of this; change one and re-check the other three.
 
 ### Upgrade hazards
 
@@ -409,11 +399,14 @@ change one and re-check the other three.
 
 - **`Requires-Dist` in the built Android wheel** still names `flet-libcpp-shared`, and
   `test_transform_loads_and_reprojects` still exists — it is the only test that would go red.
-- **The linkage split.** Android: `DT_NEEDED` still naming `libgdal.so` by bare soname,
+- **The linkage.** Android: `DT_NEEDED` still naming `libgdal.so` by bare soname,
   `libc++_shared.so` on `_transform` and nowhere else, `ogrext` still defining zero GDAL
-  symbols, and 16 KB `PT_LOAD` alignment everywhere. iOS: still eight `MH_DYLIB`, still
-  exactly five carrying GDAL, and `_env` still the only image with a `RegisterOGR*` in it.
-  If iOS ever links dynamically, the **iOS** section and every size figure change together.
+  symbols, and 16 KB `PT_LOAD` alignment everywhere. iOS: still eight `MH_DYLIB`, each
+  depending on `@rpath/libgdal.dylib` and none defining a GDAL or `RegisterOGR*` symbol
+  (`nm -a`, not `nm -gU`), and `libgdal.dylib`'s only `@rpath` dependency still
+  `@rpath/libproj.dylib`. If an extension defines GDAL symbols, `flet-libgdal` is building
+  static and each extension has its own registry: the **iOS** section and every size figure
+  change together.
 - **The driver set**, from the symbol tables on both platforms — Android's `libgdal.so` is
   stripped, so read it from dynamic symbols rather than `nm`. Two traps. The exported
   `GDALRegister_*`/`RegisterOGR*` names are a superset of what is actually called: follow
@@ -425,23 +418,20 @@ change one and re-check the other three.
   the no-`extract_packages` and leave-compilation-on advice safe. Re-grep every `.py` for
   `__file__`, `importlib.resources`, `pkgutil`, `pkg_resources`, `ctypes`, `find_library`
   and `inspect.getsource`; today the hits are Windows guards in `_path.py`, `vfs.py` and
-  `__init__.py` plus a `platform.system()` in `_show_versions.py`'s printout, all inert.
+  `__init__.py`, a `platform.system()` in `_show_versions.py`'s printout, and the preload
+  shim's `__file__` and `ctypes`, which look for a sibling `opt/` that Android never has.
 - **The sizes are measured.** Re-measure rather than adjusting by eye. They are also the
-  cheapest regression signal there is: an iOS slice that comes back tens of MB means
-  `flet-libgdal` went back to a static archive and every extension absorbed its own copy.
+  cheapest regression signal there is: an iOS slice many times the figure above means
+  `flet-libgdal` is building static and every extension carries its own GDAL.
 
 ### Coverage gaps
 
-- **`test_supported_drivers` asks the wrong table.** It checks two names in a dict
-  `_filter_supported_drivers()` builds from `_env`'s registry — exactly the table that is
-  *not* the one in question on iOS. `test_write_read_geojson` is what covers `ogrext`, and it
-  must keep writing with a proj-string CRS: an authority code fails at the CRS before it
-  reaches the driver, which is how the write looked impossible on iOS for so long. Worth
-  adding: an assertion over the exact six names `fiona.Env().drivers()` returns, so a driver
-  appearing is as red as one vanishing.
-- **Nothing covers whether an `Env()` option reaches `ogrext` on iOS.** The limit stated
-  under **iOS** follows from the linkage, not from a run.
-- **The `proj.db`-as-asset lever has never been run on a device.** It is also the claim most
-  likely to be wrong as written: [`pyproj`](../pyproj) carries eight separate PROJ copies on
-  iOS, so an API call that sets a data directory configures whichever copy it lands in, while
-  an environment variable is read by every copy. Prefer `PROJ_DATA` if anyone tries it.
+- **`test_supported_drivers` checks only two names.** Worth adding: an assertion over the
+  exact six names `fiona.Env().drivers()` returns, so a driver appearing is as red as one
+  vanishing. `test_write_read_geojson` is what covers `ogrext`, and it must keep writing with
+  a proj-string CRS: an authority code ties the write to `proj.db`, so a missing database
+  would read as a broken driver.
+- **Nothing covers whether an `Env()` option reaches `ogrext`.** The **iOS** section's claim
+  that it does follows from the single linked image, not from a run.
+- **The `proj.db`-as-asset lever has never been run on a device.** It follows from the shim
+  leaving an existing `PROJ_DATA` alone, not from a run.

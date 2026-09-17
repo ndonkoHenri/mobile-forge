@@ -13,8 +13,7 @@ from rasterio.crs import CRS
 from rasterio.transform import from_origin
 from rasterio.windows import Window
 
-# A proj-string rather than "EPSG:4326". PROJ parses this itself; an authority code needs
-# proj.db, which these wheels do not ship, so the EPSG probe below is left to fail.
+# A proj-string rather than "EPSG:4326": PROJ parses it itself, so the raster needs no proj.db.
 CRS_STRING = "+proj=longlat +datum=WGS84 +no_defs"
 SIZE = 1024
 BLOCK = 256
@@ -61,10 +60,9 @@ def versions():
 def epsg_probe():
     """Run `CRS.from_epsg(4326)` and report what came back, exception included.
 
-    The one call the missing PROJ database costs, run rather than described: a CRS on a
-    desktop, where rasterio's own wheel bundles proj.db, and a CRSError on a phone, where
-    nothing does. Caught here, because an unhandled exception in a Flet handler ends the
-    session with a crash screen.
+    Needs proj.db: iOS reads flet-libproj's, Android reads pyproj's extracted copy, and
+    without one this returns a CRSError. Caught here, because an unhandled exception in a
+    Flet handler ends the session with a crash screen.
     """
     try:
         return CRS.from_epsg(4326).to_string()
@@ -76,8 +74,7 @@ def round_trip():
     """Write the surface as a tiled GeoTIFF, read it back, and measure every disagreement.
 
     The `rasterio.Env()` is entered here rather than by the caller because GDAL's environment
-    is thread-local and this runs in a worker: without one, every driver reads as
-    unregistered.
+    is thread-local and this runs in a worker.
     """
     with rasterio.Env():
         started = time.perf_counter()

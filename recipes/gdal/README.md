@@ -6,12 +6,13 @@ thin SWIG wrapper the C++ API was designed around. On a phone that buys you a Ge
 trip, windowed reads out of a raster far larger than RAM, and GeoJSON or Shapefile I/O,
 entirely in-process and with no network.
 
-These wheels are a deliberately small GDAL: **eleven drivers**, no `proj.db`, no `GDAL_DATA`,
-no libcurl, no GEOS. None of that announces itself at import; each missing piece surfaces as
-one call failing, at the point of use. [`rasterio`](../rasterio) and [`pyogrio`](../pyogrio)
-wrap the same GDAL build with friendlier APIs and are pleasanter to write against on
-Android — but on iOS neither can reach a driver, and this package can, for a structural
-reason set out under [Extension modules](#extension-modules).
+These wheels are a deliberately small GDAL: **eleven drivers**, no `GDAL_DATA`, no libcurl, no
+GEOS. None of that announces itself at import; each missing piece surfaces as one call failing,
+at the point of use. EPSG codes resolve on iOS as installed, and on Android once
+[`pyproj`](../pyproj) is installed and extracted, for the reason
+[Coordinate systems](#coordinate-systems) gives. [`rasterio`](../rasterio) and
+[`pyogrio`](../pyogrio) wrap the same GDAL with friendlier APIs; installed together, they and
+this package share one `libgdal` — see [Extension modules](#extension-modules).
 
 ## Install
 
@@ -109,14 +110,9 @@ Avoid
 
 ### Coordinate systems
 
-**No `proj.db` and no `GDAL_DATA` reach the device, on either platform** — nothing in this
-chain ships a data file of any kind, and the diagnostics for the gap (`Cannot find proj.db`,
-`Cannot find %s (GDAL_DATA is not defined)`) are compiled into the shipped binaries. The
-consequence is one rule: **anything that names an authority cannot resolve.**
-[`ImportFromEPSG(4326)`](https://gdal.org/en/stable/api/python/spatial_ref_api.html#osgeo.osr.SpatialReference.ImportFromEPSG)
-is the call to expect trouble from; a proj-string or WKT through
-[`SetFromUserInput`](https://gdal.org/en/stable/api/python/spatial_ref_api.html#osgeo.osr.SpatialReference.SetFromUserInput)
-needs no database at all:
+**Proj-strings and WKT always work.** They name a projection by its parameters, so they need no
+database and behave identically on both platforms — still the portable choice for code that
+must run on both:
 
 ```python
 srs = osr.SpatialReference()
@@ -124,18 +120,44 @@ srs.SetFromUserInput("+proj=longlat +datum=WGS84 +no_defs")
 ds.SetSpatialRef(srs)
 ```
 
-The [`geotiff-roundtrip`](examples/geotiff-roundtrip) example builds its CRS that way and runs
-the EPSG call anyway, so the difference shows on the device rather than being asserted here.
+**EPSG codes need PROJ's database, and where that is depends on the platform.** gdal,
+[`fiona`](../fiona), [`rasterio`](../rasterio), [`pyogrio`](../pyogrio) and
+[`pyproj`](../pyproj) all link one shared PROJ, so whichever package supplies the database
+supplies it for all of them.
 
-If you need EPSG codes, ship `proj.db` as an [asset](https://flet.dev/docs/cookbook/assets)
-and point PROJ at the directory holding it — `osgeo/osr.py` exposes `SetPROJSearchPath(path)`
-and `SetPROJSearchPaths([path])`, and PROJ's `PROJ_DATA`/`PROJ_LIB` variables are compiled in.
-The database has to match: this chain is PROJ **9.5.0**, which validates a database's declared
-layout version and rejects a mismatch with *"It comes from another PROJ installation"*. The
-9,273,344-byte `proj.db` from the `pyproj` 3.7.2 PyPI wheel declares layout 1.4 and was
-accepted by a PROJ 9.5.0 built from the tarball this chain uses; [`pyproj`](../pyproj) has
-that measurement and the grid-file and network picture around it. **None of those routes has
-been run on a device for this recipe.**
+- **iOS: they just work.** `flet-libproj` ships `proj.db` and `osgeo/__init__.py` points PROJ
+  at it before the first extension import.
+  [`ImportFromEPSG(4326)`](https://gdal.org/en/stable/api/python/spatial_ref_api.html#osgeo.osr.SpatialReference.ImportFromEPSG)
+  resolves.
+- **Android: install [`pyproj`](../pyproj) and extract it.** The database cannot travel in
+  `flet-libproj` there — Flet lifts only `*.so` out of a `flet-lib*` `opt/` tree — so it ships
+  inside pyproj instead, and a file inside Flet's `sitepackages.zip` is not a path PROJ can
+  open. Both halves are needed:
+
+  ```toml
+  [tool.flet.android]
+  dependencies = ["gdal", "pyproj"]
+  extract_packages = ["pyproj"]   # without this the database stays in the zip
+  ```
+
+  `extract_packages` is read from **your** pyproject; it is never inherited from a
+  dependency, so nothing supplies it on your behalf. `osgeo` finds pyproj's copy without
+  importing pyproj. Miss either half and `ImportFromEPSG` goes on raising
+  `RuntimeError: PROJ: proj_create_from_database: Cannot find proj.db` under
+  `UseExceptions()`, or returning a non-zero error code without it.
+
+The [`geotiff-roundtrip`](examples/geotiff-roundtrip) example builds its CRS from a proj-string
+and runs the EPSG call beside it, with the Android configuration above, so a device that did
+not get the database shows it on screen.
+
+To use your **own** database instead — a newer PROJ data release, or one carrying datum grids —
+set `PROJ_DATA` to the directory holding it before importing `osgeo`, from
+[`FLET_ASSETS_DIR`](https://flet.dev/docs/reference/environment-variables/#flet_assets_dir)
+if you bundle it as an asset. An environment variable already set is left alone, so yours
+wins. It has to be set before the import: PROJ reads it when it creates its first context.
+The database has to suit this chain's PROJ **9.5.0**, which checks a database's declared layout
+version and rejects an incompatible one with *"It comes from another PROJ installation"*.
+The same PROJ serves every package above, so a database you supply serves all of them.
 
 ### Drivers and codecs
 
@@ -175,43 +197,27 @@ systems that do work are `/vsimem/`, `/vsizip/`, `/vsitar/`, `/vsigzip/`, `/vsis
 ### Extension modules
 
 `osgeo` is six compiled extensions — `_gdal`, `_gdalconst`, `_ogr`, `_osr`, `_gnm` and
-`_gdal_array` — and **how they are linked is the one place the two platforms genuinely
-differ.** On Android they share one `libgdal.so`, so there is a single driver table. On iOS
-there is no shared library at all: five of the six each absorb a whole GDAL at link time,
-24.3 to 26.5 MB apiece, and none of them can see another's copy. **That is five independent
-copies of GDAL's driver table, error state and configuration options in one process.**
+`_gdal_array` — and **on both platforms they link one shared GDAL**: `libgdal.so` on Android,
+`libgdal.dylib` on iOS, which in turn links one shared PROJ. A process therefore has one
+driver registry and one set of configuration options, and
+[`fiona`](../fiona), [`rasterio`](../rasterio), [`pyogrio`](../pyogrio) and
+[`pyproj`](../pyproj) share them when installed alongside. `band.ReadAsArray()` (`_gdal_array`
+code on a `_gdal` object),
+[`ds.GetSpatialRef()`](https://gdal.org/en/stable/api/python/raster_api.html#osgeo.gdal.Dataset.GetSpatialRef)
+(a `_gdal` result whose methods run in `_osr`) and
+[`gdal.OpenEx(path, gdal.OF_VECTOR).GetLayer(0)`](https://gdal.org/en/stable/api/python/raster_api.html#osgeo.gdal.OpenEx)
+(a `_gdal` pointer handed to `_ogr`) all operate on that one GDAL;
+[`geotiff-roundtrip`](examples/geotiff-roundtrip) measures each of them.
 
 `import osgeo.gdal` is never one extension — **it maps four**: `_gdal`, `_gdalconst`, `_ogr`
 and `_osr`, because `osgeo/gdal.py` does a module-level `from . import ogr` / `from . import
-osr`. On iOS that first line costs **77,019,224 bytes** of dylib before you have touched a
-raster, against 2,884,216 on Android arm64-v8a. There is nothing an app can do — the imports
-are unconditional in upstream's SWIG output. Budget for it; the example prints the live
+osr`. The imports are unconditional in upstream's SWIG output. The four are thin wrappers —
+2,884,216 bytes on Android arm64-v8a — over the one `libgdal`; the example prints the live
 number on screen.
 
-**What makes gdal usable on iOS where its wrappers are not** is that `osgeo.gdal` does not
-split registration from lookup. `PyInit__gdal` itself calls `GDALAllRegister`, and every
-native call in `osgeo/gdal.py` binds to `_gdal` — all 838 of them — so the driver lookup, the
-create, the band, both raster transfers and the re-open land in the same image that registered
-the drivers. `rasterio` and `pyogrio` put registration and I/O in *different* extensions,
-which on iOS means different GDALs, which is why they fail there.
-
-What is not settled is the **handoffs between extensions**, and that is what
-[`geotiff-roundtrip`](examples/geotiff-roundtrip) exists to measure: `band.ReadAsArray()` is
-`_gdal_array` code on a `_gdal` object,
-[`ds.GetSpatialRef()`](https://gdal.org/en/stable/api/python/raster_api.html#osgeo.gdal.Dataset.GetSpatialRef)
-returns an object `_gdal` minted whose methods run in `_osr`, and
-[`gdal.OpenEx(path, gdal.OF_VECTOR).GetLayer(0)`](https://gdal.org/en/stable/api/python/raster_api.html#osgeo.gdal.OpenEx)
-hands a `_gdal` pointer to `_ogr`. SWIG's cross-module type table *is* shared, so objects
-type-check across the boundary either way — a failure here would arrive as a wrong answer or a
-crash, not a `TypeError`. Run the example before you rely on any of it.
-
-**On iOS, prefer routes that keep a dataset inside one extension.** `band.ReadRaster()` and
-`WriteRaster()` take and return `bytes` and never leave `_gdal`. `ReadAsArray()` and
-`WriteArray()` cross into `_gdal_array`, but only to do a RasterIO on a pointer, with no
-registry involved. The sharpest edge is `gdal_array.SaveArray(arr, path)`, which is a driver
-from `_gdal`'s table copying a dataset that `_gdal_array` created in *its* GDAL, whose table
-holds only the in-memory `NUMPY` driver. Untested on device, and easy to avoid:
-`Driver.Create(...)` then `band.WriteArray(...)`.
+On iOS, flet relocates each extension into its own framework while `libproj.dylib` and
+`libgdal.dylib` stay plain files in `site-packages/opt/lib`, so `osgeo/__init__.py` loads both
+`RTLD_GLOBAL` before the first extension import.
 
 ### Threading
 
@@ -239,37 +245,31 @@ background threads, so end the handler with an explicit
 
 ### App size
 
-**This is one of the largest payloads in this index, and the two platforms are not
-comparable.** On Android arm64-v8a the wheel is 1,374,152 bytes, unpacking to 5,359,714, of
-which 3,163,704 is the six extensions — on top of 22.8 MB of shared native libraries, most of
-it `libgdal.so` itself. On the iOS device slice the wheel is 45,163,517 bytes,
-unpacking to 128,501,803, of which **126,305,872 is the six extensions** and nothing else
-installs. That is 40× the extension bytes on iOS for the same eleven drivers, or roughly 5×
-once Android's shared libraries are counted in.
+**The wheel is small and about the same on both platforms; the shared GDAL chain behind it is
+the payload.** On Android arm64-v8a the wheel is about 1.4 MB, unpacking to about 5.4 MB, of
+which 3,163,704 bytes is the six extensions — on top of 22.8 MB of shared native libraries,
+most of it `libgdal.so` itself. An iOS slice is 1.3–1.4 MB compressed and 5.3–5.6 MB
+unpacked, plus the `libgdal.dylib` and `libproj.dylib` that `flet-libgdal` and `flet-libproj`
+install. Those libraries are shared with every other GDAL or PROJ consumer in the app, so
+adding `fiona`, `rasterio`, `pyogrio` or `pyproj` does not add a second copy.
 
 Use an app bundle, split APKs, or narrow
 [`target_arch`](https://flet.dev/docs/publish/android/#supported-target-architectures) when
-the app does not need every ABI; on iOS there is no equivalent lever, and no
-[`[tool.flet.cleanup]`](https://flet.dev/docs/publish/#compilation-and-cleanup) entry will
-help, because the bytes are the extensions themselves.
+the app does not need every ABI.
 
 Leave Flet's default [compilation and
-cleanup](https://flet.dev/docs/publish/#compilation-and-cleanup) on: 2,182,268 bytes of the
-payload is `.py`, of which 1,325,117 is `osgeo_utils/` — command-line tools nothing in the
-package imports — and nothing here reads its own source, so `.pyc` is safe.
-
-Expect a slow first `ipa` or `ios-simulator` build, and plenty of free disk. Each iOS slice
-downloads and unpacks a 112,772,601-byte native GDAL wheel of which 11,986 bytes survive
-cleanup into the app; there is nothing to configure, but the machine does that three times.
+cleanup](https://flet.dev/docs/publish/#compilation-and-cleanup) on: about 2.2 MB of the
+payload is `.py`, of which 1,325,117 bytes is `osgeo_utils/` — command-line tools nothing in
+the package imports — and nothing here reads its own source, so `.pyc` is safe.
 
 ### Other considerations
 
 **Your desktop is not a preview of the device.** `flet run` resolves GDAL from PyPI or
-Homebrew — one shared libgdal, a full `proj.db`, and a registry of 214 drivers against the
-mobile build's eleven on the machine this page was written on. EPSG codes, PNG and `ZSTD` all
-work on your Mac and fail on the phone. Validate on a device or simulator, and make the app render its
-own exceptions on screen — an unhandled exception in a Flet handler produces
-`SESSION_CRASHED` and you lose the diagnosis.
+Homebrew — a full `proj.db` and a registry of 214 drivers against the mobile build's eleven
+on the machine this page was written on. PNG and `ZSTD` work on your Mac and fail on the phone,
+and so do EPSG codes on an Android build without extracted pyproj.
+Validate on a device or simulator, and make the app render its own exceptions on screen — an
+unhandled exception in a Flet handler produces `SESSION_CRASHED` and you lose the diagnosis.
 
 ## Things to know
 
@@ -289,15 +289,13 @@ own exceptions on screen — an unhandled exception in a Flet handler produces
 
 - **[`gdal.UseExceptions()`](https://gdal.org/en/stable/api/python/general.html#osgeo.gdal.UseExceptions)
   — the call every GDAL tutorial opens with — maps two more extensions.** It loops over gdal,
-  gdal_array, ogr, osr and gnm, so it adds `_gnm` (+24,938,936 bytes on iOS) and, when numpy
-  is installed, `_gdal_array` (+24,347,712): all six extensions, 126,305,872 bytes. Call it
-  anyway, once at startup — error-code returns are worse — but know what it costs, and call
-  it once rather than per handler.
+  gdal_array, ogr, osr and gnm, so it adds `_gnm` and, when numpy is installed, `_gdal_array`:
+  all six. Call it once at startup rather than per handler — error-code returns are worse.
 
 - **[`gdal.ExceptionMgr()`](https://gdal.org/en/stable/api/python/general.html#osgeo.gdal.ExceptionMgr)
-  looks like the cheaper switch and is not.** It skips `_gnm`, but its `__enter__` does
-  `from . import gdal_array` inside a `try/except ImportError`, so it maps the 24.3 MB
-  `_gdal_array` **even when numpy is absent** — and the Python wrapper then fails anyway.
+  looks like the lighter switch and is not.** It skips `_gnm`, but its `__enter__` does
+  `from . import gdal_array` inside a `try/except ImportError`, so it maps `_gdal_array`
+  **even when numpy is absent** — and the Python wrapper then fails anyway.
   `UseExceptions()` is guarded by `find_spec("numpy")` and does not have that failure mode.
   Prefer one `UseExceptions()` at startup to a context manager per call.
 
@@ -321,21 +319,30 @@ own exceptions on screen — an unhandled exception in a Flet handler produces
 ### Recipe shape
 
 Two recipes: `flet-libgdal` builds GDAL, `recipes/gdal` builds upstream's own bindings
-against it. `patches/config.patch` explains both of its hunks and its own bump hazard in its
-preamble, and `meta.yaml` comments its `GDAL_LIBS` and version pin next to them.
+against it. Each patch explains itself in its preamble — `config.patch` its two hunks and bump
+hazard, `ios-libgdal-preload.patch` the iOS dylib preload and the `PROJ_DATA` lookup — and
+`meta.yaml` comments its `GDAL_LIBS`, `LDFLAGS` and version pin next to them.
 
 **Almost everything the consumer sections warn about is a `flet-libgdal` decision, not a gdal
-one.** The eleven-driver registry, the codec set, the missing `GDAL_DATA` and `proj.db`, the
-absent GEOS and libcurl all come from that recipe and from `flet-libproj`. A `flet-libgdal`
-bump can invalidate most of this README without a line changing here.
+one.** The eleven-driver registry, the codec set, the missing `GDAL_DATA`, where `proj.db`
+lives, and the absent GEOS and libcurl all come from that recipe and from `flet-libproj`. A
+`flet-libgdal` bump can invalidate most of this README without a line changing here.
 
-**`GDAL_LIBS` is a single entry, and that is load-bearing.** `flet-libgdal` ships a shared
-`libgdal.dylib` on iOS which resolves proj, tiff, jpeg, curl, ssl, crypto and psl internally,
-so the six extensions link one image and share one driver registry. Naming that dependency
-chain here would link it again per extension, and a static `libgdal.a` would do the same —
-each extension absorbing its own GDAL and its own registry. `-undefined dynamic_lookup` stays
-off for the matching reason: an unresolved symbol against a real dylib is a defect that has
-to fail at link, not at `dlopen` on a device.
+**`GDAL_LIBS` is a single entry, and that is load-bearing.** On iOS `flet-libgdal` ships one
+de-versioned `opt/lib/libgdal.dylib`, install id `@rpath/libgdal.dylib`, built on GDAL's
+internal libtiff, libjpeg, zlib and json-c. Its only `@rpath` dependency is
+`@rpath/libproj.dylib`, which carries PROJ's own libtiff, libjpeg-turbo, libcurl, libpsl and
+OpenSSL; the rest is the system sqlite3 and zlib. The six extensions link that one image and
+share one driver registry. If an extension ever links a static `libgdal.a`, or names archives
+from the chain, it gets a private GDAL and a private registry — the check is under
+**Upgrade hazards**.
+
+`-undefined dynamic_lookup` is not used: an unresolved symbol against a real dylib is a defect
+that has to fail at link, not at `dlopen` on a device. iOS links with
+`-Wl,-headerpad_max_install_names` because serious_python rewrites each extension's
+`@rpath/libgdal.dylib` dependency to the longer framework path; without the padding
+`install_name_tool` fails and `flet build` still exits 0, with an app missing its
+site-packages.
 
 ### Upgrade hazards
 
@@ -350,6 +357,10 @@ Confirm on a bump that no extension *defines* `GDALAllRegister` — `nm -a <ext>
 gives that extension a private registry and produces the failure that is hardest to read:
 a full driver listing beside an open that cannot find the driver it just listed.
 
+The Android database route depends on another recipe's layout: the preload shim looks for
+`pyproj/proj_dir/share/proj/proj.db`. A `pyproj` bump that moves it leaves EPSG codes raising
+on Android with nothing in this recipe changed.
+
 The import graph moves on any bindings release too: four-modules-on-import and
 six-after-`UseExceptions()` are upstream source behaviour, not ours.
 
@@ -357,72 +368,69 @@ six-after-`UseExceptions()` are upstream source behaviour, not ours.
 
 - **That nothing in the wheel reads a file from its own installation.** This is what keeps
   gdal off `extract_packages` on Android, where site-packages is a zip: the wheel ships no
-  non-code data files at all, and the single `__file__` in `osgeo/__init__.py` is
-  `basename(dirname(__file__))` deriving a module name for `swig_import_helper`, never a path
-  to open. A bump that starts shipping a data file — a `drivers.ini`, a PROJ or GDAL data
-  tree — or that opens one relative to `__file__` turns that into a
-  `NotADirectoryError` on Android and nothing anywhere else. Re-check both on every bump:
+  non-code data files at all, and `osgeo/__init__.py` uses `__file__` only to derive a module
+  name for `swig_import_helper` and, in the preload shim, to test whether `opt/lib` and
+  `opt/share/proj` exist beside site-packages — never to open a file. A bump that starts
+  shipping a data file — a `drivers.ini`, a PROJ or GDAL data tree — or that opens one relative
+  to `__file__` turns that into a `NotADirectoryError` on Android and nothing anywhere else. Re-check both on every bump:
   `unzip -l` the wheel for non-`.py`/`.so` entries, and grep `osgeo/` for `__file__`.
 
 A green build establishes almost none of what this page claims.
 
-- **The linkage split.** Android: `DT_NEEDED` still naming `libgdal.so` by bare soname,
+- **The linkage.** Android: `DT_NEEDED` still naming `libgdal.so` by bare soname,
   `libc++_shared.so` on exactly five of six extensions, `libgdal.so` still *not* naming
   `libc++_shared.so` itself, the libproj chain intact, and 16 KB `PT_LOAD` alignment
   everywhere. Note where the requirement actually comes
   from: `libgdal.so` does not name `libc++_shared.so` at all, and gets its C++ symbols from
   `libproj.so`, which statically links libc++. It is gdal's own SWIG extensions — `_gdal`,
   `_ogr`, `_osr` and `_gnm` — that each name `libc++_shared.so` directly, which is why
-  dropping the wheel fails at `dlopen` of an extension rather than at anything GDAL-shaped. iOS: still six `MH_DYLIB`, still
-  exactly five carrying GDAL, `otool -L` naming no libcurl/libtiff/libproj, `otool -hv` still
-  `TWOLEVEL`, `nm -u` still finding no undefined GDAL/PROJ symbol.
-- **The single-table property.** `otool -tV` on the iOS `_gdal` for `PyInit__gdal` →
-  `GDALAllRegister`, and a grep of `osgeo/gdal.py` for the other five extension names.
+  dropping the wheel fails at `dlopen` of an extension rather than at anything GDAL-shaped.
+  iOS: six `MH_DYLIB`, each with `otool -L` naming `@rpath/libgdal.dylib` and none defining
+  `GDALAllRegister`; `otool -hv` `TWOLEVEL`; and in the `flet-libgdal` wheel a single
+  un-versioned `opt/lib/libgdal.dylib` whose `otool -D` is `@rpath/libgdal.dylib` and whose
+  `otool -L` names `@rpath/libproj.dylib` as its only `@rpath` dependency.
+- **Registration in module init.** `otool -tV` on the iOS `_gdal` for `PyInit__gdal` →
+  `GDALAllRegister`, which is what lets a worker thread call `gdal.Open` with no preamble.
 - **The import graph.** Re-run it against the new `osgeo/*.py`: run the wheel's Python half
   with the six extensions replaced by recording stubs.
-- **The driver set**, two independent ways: `otool -tV` on the iOS `_gdal` shows
+- **The driver set**, two independent ways: `otool -tV` on the iOS `libgdal.dylib` shows
   `GDALAllRegister` branching to exactly `GDALRegister_GTiff`, `_COG`, `_VRT`, `_MEM`,
   `GNMRegisterAllInternal` and `OGRRegisterAllInternal`; Android's `libgdal.so` dynamic symbol
   table defines the same eleven. That library is stripped, so go by dynamic symbols, not `nm`.
-- **The codec set**, as `strings -a <file> | grep -c <marker>`. In the iOS `_gdal`:
-  `LZWDecode` 7, `ZIPDecode` 3, `JPEGDecode` 7, `PackBitsDecode` 3, `LERCDecode` 1, and
-  `ZSTDDecode`/`WebPDecode`/`LZMADecode` all 0; Android's `libgdal.so` gives 5 / 2 / 4 / 2 / 1
-  and the same three zeros. `nm` on the iOS `_gdal` should still find the OJPEG, PixarLog,
-  SGILog, ThunderScan, NeXT, DumpMode and four CCITT libtiff initialisers, and no `ZSTD`,
-  `WebP` or `LZMA` one.
-- **The `proj.db`/`GDAL_DATA` gap.** `unzip -l` on the gdal and `flet-libgdal` wheels should
-  still match nothing under `proj.db`, `gdal_data`, `proj_data` or `share/` — both native
-  recipes end their build with `rm -rf $PREFIX/{bin,share}`. If that changes, **Coordinate
-  systems** needs rewriting, not relaxing.
-- **The sizes**, re-measured rather than adjusted by eye; the iOS totals are the whole
-  argument for budgeting 126 MB. Decimal units — `du -h` will disagree.
+- **The codec set**, as `strings -a <file> | grep -c <marker>` on `libgdal`. Android's
+  `libgdal.so` gives `LZWDecode` 5, `ZIPDecode` 2, `JPEGDecode` 4, `PackBitsDecode` 2,
+  `LERCDecode` 1; `ZSTDDecode`, `WebPDecode` and `LZMADecode` must be 0 there and in the iOS
+  `libgdal.dylib`.
+- **Where the data files are.** `unzip -l` on the gdal and `flet-libgdal` wheels should
+  still match nothing under `proj.db`, `gdal_data`, `proj_data` or `share/`; the
+  `flet-libproj` wheel should carry exactly `opt/share/proj/proj.db` (9,261,056 bytes in
+  build 11). If `GDAL_DATA` starts shipping, or `proj.db` moves, **Coordinate systems** needs
+  rewriting.
+- **The two PROJ routes.** On iOS, EPSG codes resolving with no app configuration. On
+  Android, `assets/extract.zip` in a built APK is 22 bytes when nothing was extracted and
+  about 9.6 MB when pyproj's database was — the cheap check that `extract_packages` took,
+  before `test_epsg_codes_work_where_proj_db_reached_the_device` says anything.
+- **The sizes**, re-measured rather than adjusted by eye. Decimal units — `du -h` will
+  disagree.
 - **The example is the live regression test.** A bump means bumping
   [`geotiff-roundtrip`](examples/geotiff-roundtrip)'s `gdal==` pin and rebuilding on both
   platforms; its panels are one-to-one with the claims above.
 
 ### Coverage gaps
 
-**The iOS argument has now run on a device — once.** On an iPhone 16 simulator on
-2026-08-25 the [`geotiff-roundtrip`](examples/geotiff-roundtrip) example reported
-`GDAL 3.13.1 - PROJ 9.5.0 - ios`, wrote and re-read a 512x512 float32 GeoTIFF through the
-GTiff driver with **0 of 262,144 elements differing** (worst residual `0.000e+00`), did the
-same for a 256x256 windowed read, handed the band to `_gdal_array` as a numpy float32
-(512, 512) with 0 differing, round-tripped a proj4 string through `_osr` as identical, and
-re-read 3 features through `_ogr` with names matching. That is the cross-extension handoff
-this page argues for, on hardware, and it is what makes `rasterio` and `pyogrio` pointing
-here more than a guess.
+**EPSG resolution through `osgeo.osr` has not itself run on a device.** The shared-PROJ
+routes are verified through other consumers of the same PROJ: on an iPhone simulator for
+`pyproj` and `fiona`, and on an Android emulator for `pyproj` alone and `fiona` with `pyproj`.
+`test_epsg_codes_work_where_proj_db_reached_the_device` covers gdal's own shim — it decides
+from whether `proj.db` is on disk, and with `pyproj` in `test.requires` and
+`extract_packages` it expects the transform to succeed on both platforms — but it has only
+run on a desktop GDAL so far.
 
-What that run does **not** cover: the five-copies-of-GDAL reading is still derived from the
-binaries, and `EPSG:4326` failed on the same screen with
-`RuntimeError: PROJ: proj_create_from_database: Cannot find proj.db` — so the recommendation
-holds for raster and vector I/O with proj-strings, and not for authority-named CRSs.
+The other tests stay inside `_gdal` and inside the `MEM` driver, so a broken GeoTIFF-on-disk
+path, a broken `_gdal_array` or `_ogr` handoff, or a vanished driver would all pass CI green;
+only [`geotiff-roundtrip`](examples/geotiff-roundtrip) on a device exercises those. Worth
+adding: an assertion over the exact eleven driver short names (so a driver *appearing* is as
+red as one disappearing) and a GTiff write-read-compare in `tmp_path`.
 
-`tests/test_gdal.py` cannot catch the thing this page is about: both tests stay inside `_gdal`
-and inside the `MEM` driver, so a broken GeoTIFF-on-disk path, a broken `osr` or `ogr`
-handoff, or a vanished driver would all pass CI green. Worth adding: an assertion over the
-exact eleven driver short names (so a driver *appearing* is as red as one disappearing), a
-GTiff write-read-compare in `tmp_path`, an `osr` round trip through `SetFromUserInput`, and an
-assertion that `ImportFromEPSG(4326)` fails. That pins the boundary this page documents.
-
-Untested anywhere: `SetPROJSearchPath` with a supplied `proj.db`, `OF_THREAD_SAFE` on device,
+Untested anywhere: an app-supplied `PROJ_DATA` on a device, `OF_THREAD_SAFE` on device,
 `gdal_array.SaveArray`, the `COG` and `VRT` drivers, and every network-drivers path.

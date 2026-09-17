@@ -133,9 +133,8 @@ def _roundtrip(driver, extension, geometry, count):
     schema = {"geometry": geometry, "properties": dict(PROPERTIES)}
 
     started = time.monotonic()
-    # driver= is always explicit: guessing it from the extension asks every driver in
-    # fiona.supported_drivers for its metadata, which fails on its own if the lookup
-    # table this write uses is empty.
+    # driver= is always explicit: guessing it from the extension fails with a bare
+    # "Unable to detect driver" for any extension this build's drivers do not claim.
     with fiona.open(path, "w", driver=driver, schema=schema) as dst:
         dst.writerecords(want)
     with fiona.open(path) as src:
@@ -166,11 +165,11 @@ def build_lines(platform):
 
 
 def registry_lines():
-    """The driver table `fiona.Env()` registers into, not the one `fiona.open` reads.
+    """The driver table `fiona.Env()` registers into.
 
-    On Android both live in one shared libgdal.so. On iOS they are separate copies in
-    separate extensions, so this list can name drivers the round trip cannot use — which
-    is why the caller prints it directly above that one.
+    `fiona.open` reads the same table, in the one shared libgdal on both platforms, but
+    a registered name still does not prove a round trip — which is why the caller prints
+    this directly above that one.
     """
     try:
         with fiona.Env() as env:
@@ -214,10 +213,10 @@ def roundtrip_lines(count):
 
 
 def crs_lines():
-    """What the absent proj.db costs, run rather than described.
+    """Whether PROJ's database reached this device, run rather than described.
 
-    A proj-string is parsed by PROJ itself and works; an EPSG code has to be looked up
-    in a database these wheels do not ship.
+    A proj-string is parsed by PROJ itself and works everywhere; an EPSG code has to be
+    looked up in proj.db, which iOS has and Android has only inside an extracted pyproj.
     """
     lines = []
     for label, call in (
@@ -238,10 +237,9 @@ def crs_lines():
 def transform_lines():
     """Import the one module `import fiona` leaves out, and reproject a point with it.
 
-    Reaching for `fiona.transform` is a decision rather than a side effect: it is the
-    only extension a plain `import fiona` never loads, and on iOS it maps another
-    statically linked copy of GDAL — tens of megabytes for this line alone. Both CRSs
-    are proj-strings, which keeps the missing proj.db out of the answer.
+    It is the only extension a plain `import fiona` never loads, and on Android the only
+    one that needs libc++_shared.so. Both CRSs are proj-strings, which keeps PROJ's
+    database out of the answer.
     """
     try:
         transform = importlib.import_module("fiona.transform").transform

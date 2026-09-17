@@ -1,8 +1,8 @@
 # rasterio elevation tile
 
-A GeoTIFF written, read back and differenced against the array it came from, on a device
-that carries no PROJ database. Every panel prints a count of mismatched elements and a
-worst absolute residual, so what you read is a measurement rather than a claim.
+A GeoTIFF written, read back and differenced against the array it came from. Every panel
+prints a count of mismatched elements and a worst absolute residual, so what you read is a
+measurement rather than a claim.
 
 A 1024×1024 float32 elevation surface is generated in numpy from a formula in
 `src/elevation.py`, written into
@@ -12,9 +12,8 @@ no network — everything is generated at runtime. `src/elevation.py` holds ever
 numpy call; `src/main.py` is Flet and the threading around them.
 
 It runs on both platforms: an arm64 Android emulator and an iPhone simulator each wrote and
-read the raster back with 0 of 1,048,576 pixels differing. Watch the size, though — an iOS
-slice of rasterio is 92–101 MB compressed, because on that platform every extension links its
-own static GDAL. The [recipe page](../..) has the breakdown.
+read the raster back with 0 of 1,048,576 pixels differing. The [recipe page](../..) has the
+size breakdown.
 
 What it demonstrates:
 
@@ -26,23 +25,26 @@ What it demonstrates:
   [`ds.stats(approx=False)`](https://rasterio.readthedocs.io/en/stable/api/rasterio.io.html#rasterio.io.DatasetReader.stats)
   against `min`/`max`/`mean`/`std` computed in float64. All three residuals are zero or a
   few times 1e-13.
-- **A CRS with no database behind it** — the raster is tagged with a `+proj=` string,
-  because these wheels ship no `proj.db`. The profile row prints the CRS as it survived the
-  round trip, along with `to_epsg()` → `None`.
+- **A CRS that needs no database** — the raster is tagged with a `+proj=` string, which PROJ
+  parses itself. The profile row prints the CRS as it survived the round trip, and
+  `to_epsg()`, which identifies it against the database: `4326` where one reached the device,
+  `None` where none did.
 - **Georeferencing, which needs no database at all** — a longitude/latitude pair goes
   through [`ds.index`](https://rasterio.readthedocs.io/en/stable/api/rasterio.io.html#rasterio.io.DatasetReader.index)
   to a row and column and through
   [`ds.sample`](https://rasterio.readthedocs.io/en/stable/api/rasterio.io.html#rasterio.io.DatasetReader.sample)
   to an elevation, differenced against the same element of the source array. That is the
-  affine transform, not the CRS, so it is the part of "geospatial" that still works here.
+  affine transform, not the CRS, so it works with or without a database.
 - **What the device actually supports**, read from the live registry rather than described:
   `env.drivers()` inside a
   [`rasterio.Env`](https://rasterio.readthedocs.io/en/stable/api/rasterio.env.html#rasterio.env.Env)
   names 147 drivers on a desktop and eleven on a phone, where GDAL was built with four
   raster drivers, five vector ones and the two GNM network ones.
-- **Where the missing database bites** —
+- **An EPSG code** —
   [`CRS.from_epsg(4326)`](https://rasterio.readthedocs.io/en/stable/api/rasterio.crs.html#rasterio.crs.CRS.from_epsg)
-  is run rather than avoided, and prints a CRS on a desktop and a `CRSError` on a phone.
+  needs PROJ's database. iOS reads the one `flet-libproj` ships; Android reads pyproj's, which
+  is why `pyproject.toml` depends on `pyproj` and lists it in `extract_packages`. Drop either
+  and that row prints a `CRSError` on Android.
 - **Why a window is worth having** — a
   [`ft.Slider`](https://flet.dev/docs/controls/slider/) picks the window side and drives a
   re-read from [`page.run_thread(...)`](https://flet.dev/docs/controls/page/#flet.Page.run_thread).
@@ -68,8 +70,6 @@ uv run flet build ipa
 uv run flet build ios-simulator
 ```
 
-A desktop run (`uv run flet run`) differs in three rows, over and above the timings that
-move on every run: rasterio's PyPI wheel bundles its own `proj_data`, so
-`CRS.from_epsg(4326)` succeeds and the profile's `to_epsg` reads `4326` rather than `None`,
-and the driver line reads `147 drivers` rather than the eleven a phone registers. Every
-residual is identical.
+A desktop run (`uv run flet run`) uses rasterio's PyPI wheel, a different GDAL with its own
+`proj_data`: the version line differs, and the driver line reads `147 drivers` rather than
+the eleven a phone registers. Every residual is identical.

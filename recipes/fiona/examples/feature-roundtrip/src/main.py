@@ -28,9 +28,8 @@ def main(page: ft.Page):
     def render(count):
         """Refill the results column from a fresh set of probes.
 
-        The registry comes immediately before the round trip on purpose: on iOS
-        they are different driver tables, so the first is not evidence for the
-        second.
+        The registry comes immediately before the round trip on purpose: a
+        registered driver is not evidence that the round trip works.
         """
         sections = (
             ("Build", build_lines(page.platform.value)),
@@ -61,9 +60,8 @@ def main(page: ft.Page):
     def rerun():
         """Run the probes off the thread pool, since 2000 features is not instant.
 
-        Also the first run, called once below: `import fiona` has already mapped every
-        extension by then, and on iOS `transform_lines` maps another one, so doing the
-        opening pass on the UI thread would hold the first paint behind it.
+        Also the first run, called once below, so the opening round trips and the
+        `fiona.transform` import do not hold the first paint behind them.
 
         The guard reads `disabled` back rather than trusting it to have taken effect.
         Disabling the slider only queues the new state for the client, and

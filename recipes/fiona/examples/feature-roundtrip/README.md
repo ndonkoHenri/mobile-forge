@@ -22,11 +22,10 @@ What it demonstrates:
 
 - **That the driver table and the round trip are two different questions.** Section 2 prints
   the table [`fiona.Env()`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.env.Env)
-  registers into, and section 3 exercises the one `fiona.open` reads. On Android those are
-  one shared `libgdal` on both platforms. They are printed adjacently anyway, because a
-  healthy section 2 is not on its own evidence for section 3: the registry and the round trip
-  answer different questions, and only the round trip proves a driver can actually open
-  something.
+  registers into, and section 3 exercises it through `fiona.open` — one table, in the one
+  shared `libgdal` on both platforms. They are printed adjacently because a healthy
+  section 2 is not on its own evidence for section 3: only the round trip proves a driver can
+  actually open something.
 - **A round trip that checks itself**, for `GeoJSON` and `ESRI Shapefile` × `Point` and
   `Polygon`: feature count, geometry type per feature, worst absolute coordinate residual,
   worst float-property residual, and mismatched integer and string properties. On a desktop
@@ -37,18 +36,19 @@ What it demonstrates:
 - **The read-back schema as information, not an assertion.** The same
   `{"name": "str", "n": "int", "v": "float"}` comes back as `n: int32` from GeoJSON and as
   `name: str:80, n: int:18, v: float:24.15` from a Shapefile.
-- **Where the missing PROJ database bites** —
+- **Whether PROJ's database reached the device** —
   [`CRS.from_string("+proj=…")`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.crs.CRS.from_string)
   beside
   [`CRS.from_epsg(4326)`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.crs.CRS.from_epsg),
-  both run rather than described. No CRS is passed to any layer, which keeps the driver
-  question separate from the database question.
-- **What [`fiona.transform`](https://fiona.readthedocs.io/en/stable/fiona.html#module-fiona.transform)
-  costs to reach.** It is the one extension `import fiona` does not load, so importing it is
-  a decision rather than a side effect — and on iOS it maps another statically linked copy of
-  GDAL, tens of megabytes for that one line. The card reprojects a point through it, so the
+  both run rather than described. With fiona as the only dependency the EPSG line resolves on
+  iOS and raises on Android, where the database arrives only inside an extracted
+  [`pyproj`](../../../pyproj). No CRS is passed to any layer, which keeps the driver question
+  separate from the database question.
+- **That [`fiona.transform`](https://fiona.readthedocs.io/en/stable/fiona.html#module-fiona.transform)
+  loads and computes.** It is the one extension `import fiona` does not load, and on Android
+  the only one that needs `libc++_shared.so`. The card reprojects a point through it, so the
   import is shown working rather than merely attempted; both CRSs are proj-strings, which
-  keeps the missing `proj.db` out of that answer.
+  keeps PROJ's database out of that answer.
 - **The cost of a real dataset, measured.** A [`ft.Slider`](https://flet.dev/docs/controls/slider/)
   from 10 to 2000 features re-runs the four round trips from
   [`page.run_thread(...)`](https://flet.dev/docs/controls/page/#flet.Page.run_thread) and

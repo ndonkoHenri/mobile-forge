@@ -2,15 +2,9 @@ import pytest
 
 
 def test_import_fiona():
-    """`import fiona` triggers `fiona._env.so`'s dlopen. On iOS, the
-    published wheel's _env.so was linked against `libgdal.a` only — GDAL's
-    static archive leaks undefined references for symbols GDAL itself uses
-    from libproj/libtiff/libcurl/libpsl/openssl. iOS dyld eagerly resolves
-    the flat namespace at dlopen and aborts with
-    `symbol not found in flat namespace '_geod_init'` (or _TIFFClientOpen
-    / _curl_easy_init / _psl_builtin, depending on which gap is hit
-    first). Android isn't affected — libproj/libtiff/libcurl/etc. are
-    shared libraries there, so their symbols resolve via DT_NEEDED."""
+    """`import fiona` dlopens `fiona._env`, which links the shared libgdal:
+    `@rpath/libgdal.dylib` on iOS, which flet relocates into a framework, and
+    `libgdal.so` by soname out of jniLibs on Android."""
     import fiona
 
     assert hasattr(fiona, "supported_drivers")
@@ -34,24 +28,16 @@ def test_write_read_geojson(tmp_path):
     """Write a Point feature to GeoJSON then read it back — covers OGR's
     writer + reader without depending on bundled test data.
 
-    This used to skip on iOS, on the reasoning that OGR's GeoJSON writer stamps
-    a default WGS84 field through PROJ even when the caller supplies no CRS, so
-    the missing `proj.db` made a write impossible. Naming the CRS as a
-    proj-string avoids that lookup entirely — PROJ needs its database only to
-    resolve an authority code — and `pyogrio`, which shares this GDAL, writes
-    GeoJSON on an iPhone simulator this way. So the restriction is avoidable
-    rather than fundamental, and the test now runs everywhere.
-
-    It also covers the driver registry: `ogrext`, where `fiona.open` works, has
-    its own GDAL copy under a static libgdal, and `ios-driver-registry.patch`
-    is what populates it. Without that patch this fails at the driver rather
-    than at the CRS."""
+    It is also the test of the driver lookup in `ogrext`, where `fiona.open`
+    resolves driver names against the one registry `fiona._env` fills. The CRS
+    is a proj-string because PROJ needs its database only to resolve an
+    authority code, so a failure here is never a missing `proj.db`."""
     import fiona
 
     schema = {"geometry": "Point", "properties": {"name": "str"}}
     path = tmp_path / "tiny.geojson"
 
-    # proj-string, never an authority code: this chain ships no proj.db.
+    # proj-string, never an authority code: keeps this test independent of proj.db.
     with fiona.open(
         path, "w", driver="GeoJSON", schema=schema,
         crs="+proj=longlat +datum=WGS84 +no_defs",
@@ -80,10 +66,10 @@ def test_transform_loads_and_reprojects():
     reprojection.
 
     The CRSs are spelled as proj-strings rather than EPSG codes deliberately.
-    `flet-libproj` ships no `proj.db`, so anything naming an authority raises
-    `CRSError: PROJ: proj_create_from_database: Cannot find proj.db` — a real
-    limitation, covered separately by `test_epsg_codes_need_proj_db`. Using a
-    proj-string keeps this test pinned to the thing it is about: that the
+    Where `proj.db` has not reached the device, anything naming an authority
+    raises `CRSError: PROJ: proj_create_from_database: Cannot find proj.db` —
+    covered separately by `test_epsg_codes_work_where_proj_db_reached_the_device`.
+    A proj-string keeps this test pinned to the thing it is about: that the
     extension loads and computes.
     """
     from fiona.transform import transform
@@ -106,9 +92,10 @@ def test_epsg_codes_work_where_proj_db_reached_the_device():
 
     `flet-libproj` ships `proj.db` in `opt/share/proj` and the preload shim points
     `PROJ_DATA` at it. On iOS that directory is real inside the app, so authority
-    codes resolve; on Android it never arrives, because Flet's `copyOpt` copies
-    only `*.so` out of a `flet-lib*` `opt/` tree. Both are correct answers for
-    their platform, and asserting the wrong one is the failure this catches.
+    codes resolve; on Android that tree never arrives, because Flet's `copyOpt`
+    copies only `*.so` out of a `flet-lib*` `opt/` tree, and the database exists
+    only inside a `pyproj` the app extracts. Each outcome is correct for its
+    setup, and asserting the wrong one is the failure this catches.
 
     Decide from the shipped artifact rather than from what PROJ reports, or the
     test passes in both branches and proves neither. Proj-strings are the control:

@@ -141,7 +141,7 @@ def main(page: ft.Page):
                     heading("Into _ogr"),
                     vectors := ft.Column(spacing=6),
                     ft.Divider(),
-                    heading("Driver registries"),
+                    heading("Driver registry"),
                     drivers := ft.Column(spacing=6),
                     heading("Exception mode"),
                     modes := ft.Column(spacing=6),

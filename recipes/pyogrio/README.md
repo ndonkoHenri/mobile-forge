@@ -23,15 +23,15 @@ Both platforms read and write, and this is a deliberately small GDAL behind them
 drivers and no GDAL data directory. **Formats** below says what that rules out — GeoPackage
 is not one of the six.
 
-EPSG codes do resolve, which they did not before: `flet-libproj` ships PROJ's database and
-pyogrio points PROJ at it. Automatic on iOS; on Android it needs [`pyproj`](../pyproj)
-installed and `extract_packages` set, for the reason **Coordinate systems** gives.
-Proj-strings need no database at all and are the portable choice for code that runs on both.
+EPSG codes resolve too: `flet-libproj` ships PROJ's database and pyogrio points PROJ at it.
+Automatic on iOS; on Android it needs [`pyproj`](../pyproj) installed and `extract_packages`
+set, for the reason **Coordinate systems** gives. Proj-strings need no database at all and
+are the portable choice for code that runs on both.
 
 Both platforms share one GDAL, so the wheels are small and near-identical: an iOS slice is
 0.6–0.7 MB compressed and 2.2–2.3 MB unpacked, against 0.6 MB and 1.9 MB for an Android
-wheel. The GDAL itself is separate — `flet-libgdal` — and **App size** puts the two together,
-which is the comparison that actually decides it.
+wheel. The GDAL chain itself ships separately, in `flet-libgdal` and `flet-libproj`, and
+**App size** covers it.
 
 ## Examples
 
@@ -180,11 +180,12 @@ libjpeg and libpsl. Use an app bundle, split APKs, or narrow
 [`target_arch`](https://flet.dev/docs/publish/android/#supported-target-architectures) when
 the app does not need every ABI.
 
-iOS has no shared GDAL to amortise, so the chain is inside the wheels: 27.8–30.6 MB
-compressed and 78.3–83.7 MB unpacked per slice, measured on build 2. Compare *totals* rather
-than wheels — an Android ABI costs about 1.9 MB of wheel plus 21.5 MB of shared libraries,
-so iOS is roughly three times an ABI, not forty times. An `ipa` carries one slice, and
-nothing else in the chain ships alongside it.
+On iOS the chain is two dylibs: `libgdal.dylib` from `flet-libgdal`, and `libproj.dylib`
+from `flet-libproj`, which absorbs libtiff, libjpeg-turbo, libcurl, libpsl and OpenSSL and
+ships `proj.db` beside it. An `ipa` carries one slice. On both platforms the chain is shared
+by every GDAL consumer in the app — [`gdal`](../gdal), [`fiona`](../fiona),
+[`rasterio`](../rasterio), [`pyproj`](../pyproj) — so pairing one with pyogrio adds no
+second GDAL.
 
 Just over half of each unpacked Android wheel — 1,008,031 bytes on every architecture — is
 `pyogrio/tests` and its fixtures, which your app never imports. Flet's default
@@ -200,9 +201,9 @@ package_files = ["pyogrio/tests"]
 
 A desktop `flet run` uses PyPI's own wheel, and it is a different GDAL: for 0.12.1 on macOS
 arm64 it bundles GDAL 3.11.4 with 64 vector drivers and a PROJ database, against 3.13.1 and a
-handful of drivers on device. GeoPackage, FlatGeobuf, EPSG codes and every CRS a file names
-by authority resolve there and do not on the phone, so validate format and CRS choices on a
-device or emulator.
+handful of drivers on device. GeoPackage and FlatGeobuf open there and not on the phone, and
+EPSG codes resolve there without the Android setup **Coordinate systems** describes, so
+validate format and CRS choices on a device or emulator.
 
 ## Things to know
 
@@ -211,10 +212,11 @@ device or emulator.
   Set GDAL_DATA environment variable to the correct path.` and GDAL logs `Cannot find
   header.dxf (GDAL_DATA is not defined)` — both reproduced on a desktop by deleting the bundled
   directory, after which GeoJSON and Shapefile round trips still came back with zero wrong
-  values. A second probe calls `OSRImportFromEPSG(4326)`, and with no usable `proj.db` it
-  fails too, adding `RuntimeWarning: Could not detect PROJ data files. Set PROJ_LIB
-  environment variable to the correct path.` — that probe is the very lookup the CRS advice
-  above is about, so the pair of warnings is the whole CRS story arriving at import time.
+  values. A second probe calls `OSRImportFromEPSG(4326)`, and where no `proj.db` reached the
+  device — Android without pyproj extracted — it fails too, adding `RuntimeWarning: Could
+  not detect PROJ data files. Set PROJ_LIB environment variable to the correct path.` — that
+  probe is the very lookup the CRS advice above is about, so the pair of warnings is the
+  whole CRS story arriving at import time.
 
 - **`pyogrio.raw.read` and `pyogrio.raw.write` are not in the upstream API reference.** They
   are what `read_dataframe` and `write_dataframe` call, and the only route that needs nothing
@@ -230,41 +232,37 @@ device or emulator.
 
 ### Recipe shape
 
-This is a consumer of the `flet-libgdal` chain, and both platforms now resolve one shared
-image: `libgdal.so` on Android, `libgdal.dylib` on iOS. The patch preamble owns the delivery
+This is a consumer of the `flet-libgdal` chain, and both platforms resolve one shared image:
+`libgdal.so` on Android, `libgdal.dylib` on iOS. All five extensions — `_ogr`, `_io`,
+`_geometry`, `_err`, `_vsi` — link it, so an app has one driver registry and one PROJ, shared
+with gdal, fiona, rasterio and pyproj. `ios-libgdal-preload.patch`'s preamble owns its
 mechanism and `meta.yaml`'s comments own the individual settings; do not restate either here.
 
-**The shared library is load-bearing, not an optimisation.** A static `libgdal.a` is copied
-*into* every extension that links it, so each of `_ogr`, `_io` and `_geometry` would carry its
-own GDAL — and with it its own driver registry and its own configuration. pyogrio registers
-in `_ogr` while reads and writes resolve driver names in `_io`, so the registry populated
-would not be the one consulted: `list_drivers()` reports a full table and every read and write
-fails. Keeping `flet-libgdal` shared on iOS is what makes those the same registry.
-
-What remains is delivery, which `ios-libgdal-preload.patch` handles: flet relocates each
-extension into its own framework while the dylib stays a plain file in `opt/lib`, and nothing
-on a relocated extension's rpath resolves it, so the dylib is loaded `RTLD_GLOBAL` before the
-first extension import. Verify with `otool -L` that every extension names
-`@rpath/libgdal.dylib` and that none of them *defines* `GDALAllRegister` — a definition means
-a static GDAL crept back in.
+**The shared library is load-bearing, not an optimisation.** A static GDAL is copied *into*
+every extension that links it, giving each its own driver registry and configuration.
+pyogrio registers in `_ogr` while reads and writes resolve driver names in `_io`, so with a
+static GDAL the registry populated is not the one consulted: `list_drivers()` reports a full
+table and every read and write fails.
 
 ### Upgrade hazards
 
-The build is steered entirely through `get_gdal_config()`'s environment branch —
-`GDAL_INCLUDE_PATH`, `GDAL_LIBRARY_PATH`, `GDAL_VERSION` — which exists only because upstream
-still uses `setup.py`. A move to meson or scikit-build-core retires both the `script_env`
-block and the patch at once: treat that release as a redesign, not a bump. Bumping
+The whole link is pyogrio's own `get_gdal_config()` environment branch — `GDAL_INCLUDE_PATH`,
+`GDAL_LIBRARY_PATH` (one directory) and `GDAL_VERSION` — with its default
+`gdal_libs = ["gdal"]`. That branch exists only because upstream still uses `setup.py`, so a
+move to meson or scikit-build-core retires the `script_env` block: treat that release as a
+redesign, not a bump. Bumping
 `flet-libgdal` is the other hazard, because `OGR_BUILD_OPTIONAL_DRIVERS=OFF` there is what
 keeps the driver set to the handful this page names.
 
 ### Re-verification checklist
 
-- **That libgdal is still SHARED on iOS, first.** `file` the wheel's
-  `opt/lib/libgdal.dylib` — it must be a `Mach-O … dynamically linked shared library`, and
-  `otool -D` must report `@rpath/libgdal.dylib`. Then confirm no extension *defines*
-  `GDALAllRegister` (`nm -a <ext> | grep " [tT] _GDALAllRegister"` → empty) while every one
-  of them names `@rpath/libgdal.dylib` in `otool -L`. A definition means a static GDAL got
-  linked in again, which silently restores a registry per extension.
+- **That libgdal is SHARED on iOS, first.** `file` `flet-libgdal`'s
+  `opt/lib/libgdal.dylib` — it must be a `Mach-O … dynamically linked shared library`,
+  `otool -D` must report `@rpath/libgdal.dylib`, and its only `@rpath` dependency must be
+  `@rpath/libproj.dylib`. Then confirm no extension *defines* `GDALAllRegister`
+  (`nm -a <ext> | grep " [tT] _GDALAllRegister"` → empty) while all five name
+  `@rpath/libgdal.dylib` in `otool -L`. A definition means that extension links GDAL
+  statically, which gives it a driver registry of its own.
 - **Android's single table:** every extension names `libgdal.so` in `DT_NEEDED`, `_ogr`
   imports `GDALAllRegister` as undefined — that, not `OGRRegisterAll`, is what `_ogr.pyx`
   calls — and `_io` imports `GDALGetDriverByName`, `GDALOpenEx` and `GDALCreate` as
@@ -286,11 +284,18 @@ keeps the driver set to the handful this page names.
 
 ### Coverage gaps
 
-`test_vector_round_trip` writes a GeoJSON layer and reads it back, which is the only test
-here that reaches `_io`. Keep that asymmetry in mind before adding tests: `list_drivers()`
-and `__gdal_version__` are `_ogr` calls, and they passed on iOS throughout the period the
-package could not open a dataset there. It should always write with a proj-string CRS, never
-an authority code, or it fails at the CRS before reaching the thing it exists to check.
+Only the two round-trip tests reach `_io`. `list_drivers()` and `__gdal_version__` are `_ogr`
+calls and pass whether or not `_io` can open a dataset, so a test built on them proves
+nothing about I/O.
+
+`test_vector_round_trip` writes a GeoJSON layer with a proj-string CRS and reads it back, so
+it checks I/O alone; an authority code there would fail at the CRS on a device without the
+database, before reaching the thing it exists to check.
+`test_epsg_codes_work_where_proj_db_reached_the_device` owns the database. It picks its
+branch from whether `proj.db` is on disk, not from what PROJ reports: with one, an
+`EPSG:32633` write reads back as that code and an RFC7946 write reprojects the point to 15°E,
+60°N; without one, the write must raise `CRSError`. `meta.yaml` installs and extracts pyproj
+for the tests, so the database branch is the expected one on both platforms.
 
 Not covered on device: the attribute round trip, the Shapefile's sibling files, in-memory `/vsimem`
 datasets, the Arrow API, appending to a layer, and geopandas. The **Formats**, **Coordinate

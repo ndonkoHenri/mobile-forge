@@ -13,7 +13,8 @@ dependencies = [
 dev = ["flet-cli", "flet-desktop", "flet-web"]
 
 [tool.flet.android]
-dependencies = ["gdal==3.13.1"]
+dependencies = ["gdal==3.13.1", "pyproj==3.7.2"]
+extract_packages = ["pyproj"]
 
 [tool.flet.ios]
 dependencies = ["gdal==3.13.1"]

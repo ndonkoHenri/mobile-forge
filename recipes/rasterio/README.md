@@ -7,7 +7,7 @@ of it, get an `ndarray` back. That window is why it is worth having on a phone �
 app touch a raster far larger than its RAM, and on a 4096×4096 float32 surface it is the
 difference between 1.3 MB of resident memory and 134 MB for the same file (host figures).
 Everything happens in-process with no network, because these wheels are a deliberately small
-GDAL: four raster drivers, no PROJ database, no libcurl.
+GDAL: four raster drivers and no libcurl.
 
 ## Install
 
@@ -28,9 +28,9 @@ iPhone simulator with no pixels differing. Both resolve one shared GDAL — `lib
 Android, `libgdal.dylib` on iOS — so there is a single driver registry and a single
 configuration, and `rasterio.Env()` reaches the code doing the I/O on either platform.
 
-Sizes are close now too: an iOS slice is 4.4–4.5 MB compressed and 25.0–25.4 MB unpacked,
-against 4.2–4.4 MB and 23–24 MB for an Android wheel, plus `flet-libgdal` itself once per
-app. Most of that unpacked figure is Cython-generated `.c` that Flet's cleanup removes —
+An iOS slice is 4.4–4.5 MB compressed and 25.0–25.4 MB unpacked, against 4.2–4.4 MB and
+23–24 MB for an Android wheel, plus `flet-libgdal` and `flet-libproj` once per app. Most of
+that unpacked figure is Cython-generated `.c` that Flet's cleanup removes —
 **App size** has the breakdown. If an app only needs raster I/O and not rasterio's API,
 [`gdal`](../gdal)'s SWIG bindings do the same work from a much smaller wheel.
 
@@ -59,7 +59,7 @@ with rasterio.Env(), rasterio.open(
     "w",
     driver="GTiff",  # name it: extension sniffing is a registry lookup
     height=1024, width=1024, count=1, dtype="float32",
-    crs=CRS.from_string("+proj=longlat +datum=WGS84 +no_defs"),  # not "EPSG:4326"
+    crs=CRS.from_string("+proj=longlat +datum=WGS84 +no_defs"),  # works with or without proj.db
     transform=from_origin(10.0, 60.0, 0.0005, 0.0005),
     tiled=True, blockxsize=256, blockysize=256,
     compress="DEFLATE", predictor=3,
@@ -99,57 +99,55 @@ for anything you want to keep.
 
 ### Coordinate systems
 
-**Write a CRS as a `+proj=` string or WKT, not as an EPSG code.** Nothing in this chain ships
-a PROJ database: neither the rasterio wheels nor `flet-libgdal` carry a `proj.db` or a GDAL
-data directory, on either platform, because both native recipes end their build by deleting
-`$PREFIX/share`. [`pyproj`](../pyproj) has the same gap for the same reason.
-
-Unlike pyproj, which gates every `CRS`, `Proj` and `Transformer` call behind a Python-level
-check, rasterio has no such gate, so only *authority-database lookups* fail.
-`CRS.from_string("+proj=longlat +datum=WGS84 +no_defs")`, `+proj=utm +zone=33 …` and
-`CRS.from_wkt(…)` all work, and a GeoTIFF written with one keeps its CRS through a read back.
-[`CRS.from_epsg(4326)`](https://rasterio.readthedocs.io/en/stable/api/rasterio.crs.html#rasterio.crs.CRS.from_epsg)
-raises `rasterio.errors.CRSError: The EPSG code is unknown. PROJ:
-internal_proj_create_from_database: Cannot find proj.db`, and so do
-`CRS.from_string("EPSG:3857")`, `rasterio.open(…, crs="EPSG:4326")` and any
-[`rasterio.warp`](https://rasterio.readthedocs.io/en/stable/api/rasterio.warp.html) call
-between two EPSG codes; `crs.to_epsg()` comes back `None` on a proj-string CRS, because
-identifying it against the authority database is exactly what cannot happen. The import itself
-succeeds, printing one line to stderr:
-`Warning 3: Cannot find gdalvrt.xsd (GDAL_DATA is not defined)`.
-
-Georeferencing is unaffected. `ds.index`, `ds.sample` and `ds.bounds` are the affine transform
-rather than the CRS, so a longitude/latitude pair still resolves to a row, a column and a pixel
-value with no database anywhere.
-
-**To get EPSG codes back, ship `proj.db` as an asset** and point rasterio's search path at the
-directory holding it.
-[`FLET_ASSETS_DIR`](https://flet.dev/docs/reference/environment-variables/#flet_assets_dir) is
-where a bundled `src/assets/` lands on device, and there is no import-time-only window — this
-works at any point after `import rasterio`:
+**Proj-strings and WKT always work.** They name a projection by its parameters, so they need
+no database and behave identically on both platforms:
 
 ```python
-rasterio._env.set_proj_data_search_path(
-    os.path.join(os.getenv("FLET_ASSETS_DIR", "assets"), "proj")
-)
+from rasterio.crs import CRS
+
+CRS.from_string("+proj=longlat +datum=WGS84 +no_defs")
 ```
 
-Verified with no data at all in the process, `CRS.from_epsg(4326)` raised before that call and
-returned `EPSG:4326` after it. `rasterio/env.py` also honours `PROJ_DATA` and `PROJ_LIB` from
-`os.environ` on the way through the import, if you would rather set an environment variable.
+**EPSG codes need PROJ's database, and where that is depends on the platform.** `flet-libgdal`
+resolves one shared PROJ for every consumer, so whichever package supplies the database
+supplies it for all of them.
 
-Take the database from `pyproj`'s wheel: about 9.3 MB, declaring database layout 1.4, which is
-exactly what the PROJ 9.5.0 in this chain expects. `rasterio==1.5.0`'s own macOS wheel carries
-a larger one — about 9.6 MB, PROJ 9.7.1, layout 1.6 — which the gate should also accept, since
-PROJ wants the major to match and the minor to be at least what it expects, but that pairing
-has never been run on a device. Do not substitute an empty file: pyproj unlocks its API from a
-zero-byte stub because its gate only checks that the name exists, whereas here a stub turns the
-plain *Cannot find proj.db* into `SQLite error [ no such table: metadata ]` and buys nothing.
+- **iOS: they just work.** `flet-libproj` ships `proj.db` and `rasterio/__init__.py` points
+  PROJ at it before the first extension import.
+  [`CRS.from_epsg(4326)`](https://rasterio.readthedocs.io/en/stable/api/rasterio.crs.html#rasterio.crs.CRS.from_epsg)
+  resolves.
+- **Android: install [`pyproj`](../pyproj) and extract it.** The database cannot travel in
+  `flet-libproj` there — Flet lifts only `*.so` out of a `flet-lib*` `opt/` tree — so it ships
+  inside pyproj instead, and a file inside Flet's `sitepackages.zip` is not a path PROJ can
+  open. Both halves are needed:
 
-**Or ship no database at all.** Write CRSes as `+proj=` strings or WKT and nothing needs one —
-that is what the [`elevation-tile`](examples/elevation-tile) example does, at zero bytes of
-payload. What you give up is discovery: you have to know the projection parameters, and
-`to_epsg()` will not name them for you.
+  ```toml
+  dependencies = ["flet", "rasterio", "pyproj"]
+
+  [tool.flet.android]
+  extract_packages = ["pyproj"]   # without this the database stays in the zip
+  ```
+
+  `extract_packages` is read from **your** pyproject; it is never inherited from a
+  dependency, so nothing supplies it on your behalf. rasterio finds pyproj's copy without
+  importing pyproj. Miss either half and `CRS.from_epsg(4326)`, `crs="EPSG:4326"` and any
+  [`rasterio.warp`](https://rasterio.readthedocs.io/en/stable/api/rasterio.warp.html) call
+  naming a code go on raising `rasterio.errors.CRSError`.
+
+Without a database, what you give up is discovery: `crs.to_epsg()` on a CRS built from a
+proj-string comes back `None`, because naming it means identifying it against the authority
+database. Georeferencing is unaffected — `ds.index`, `ds.sample` and `ds.bounds` use the affine
+transform rather than the CRS, so a longitude/latitude pair still resolves to a pixel value.
+
+To use your **own** database instead — a newer PROJ release, or one carrying datum grids —
+set `PROJ_DATA` to the directory holding it before importing rasterio, from
+[`FLET_ASSETS_DIR`](https://flet.dev/docs/reference/environment-variables/#flet_assets_dir)
+if you bundle it as an asset. An environment variable already set is left alone, so yours
+wins. Set it before the import: PROJ reads it when it creates its first context. After the
+import, rasterio's private `rasterio._env.set_proj_data_search_path(path)` does the same job.
+
+[`pyproj`](../pyproj), [`gdal`](../gdal), [`fiona`](../fiona) and [`pyogrio`](../pyogrio)
+share that one PROJ, so a database you supply serves all of them.
 
 ### Threading
 
@@ -209,21 +207,22 @@ nothing in the package reads its own source, so compiling to `.pyc` is safe.
 
 iOS is close behind, and the same cleanup lever does most of the work. A slice is 4.4–4.5 MB
 compressed and 25.0–25.4 MB unpacked, of which roughly 20 MB is the same generated C, so
-cleanup takes it to about 5 MB. On top of that the app carries one `flet-libgdal` —
-9.6–10.4 MB compressed, 27.6–29.3 MB unpacked — shared with every other GDAL consumer, so a
-project using rasterio and [`fiona`](../fiona) together pays for it once. An `ipa` ships one
-slice. Where an app needs raster I/O rather than rasterio's API, [`gdal`](../gdal) does the
-same work from a smaller wheel.
+cleanup takes it to about 5 MB. On top of that the app carries one `flet-libgdal` and one
+`flet-libproj`, shared with every other GDAL and PROJ consumer, so a project using rasterio
+and [`fiona`](../fiona) together pays for them once. An `ipa` ships one slice. Where an app
+needs raster I/O rather than rasterio's API, [`gdal`](../gdal) does the same work from a
+smaller wheel.
 
 ### Other considerations
 
 **Your desktop is not a preview of the device, and the gap is enormous.** `flet run` resolves
 rasterio from PyPI, whose macOS wheel bundles its own GDAL data directory (about 2 MB) and PROJ
 database (about 10 MB) and registers 44 raster drivers across 59 extensions, against four on
-the mobile build. EPSG codes, PNG, netCDF and `compress="ZSTD"` all work on your Mac and fail
-on the phone. Reproduce the device shape locally by renaming
-`site-packages/rasterio/gdal_data` and `.../proj_data` aside — that is how the CRS findings
-above were established — and validate on a device or emulator before shipping.
+the mobile build. PNG, netCDF and `compress="ZSTD"` all work on your Mac and fail on the
+phone, and EPSG codes work there whether or not the app carries the Android setup above.
+Renaming `site-packages/rasterio/gdal_data` aside reproduces the device's missing GDAL data
+directory, and `.../proj_data` an Android app without that setup; validate on a device or
+emulator before shipping.
 
 ## Things to know
 
@@ -261,10 +260,10 @@ above were established — and validate on a device or emulator before shipping.
 
 - **GDAL is compiled without libcurl, so rasterio on device is strictly offline.** `/vsicurl/`,
   `/vsis3/`, `/vsigs/`, `/vsiaz/` and `rasterio.session`'s AWS/GS/Azure support are dead on
-  both platforms — including iOS, where libcurl objects *are* linked into the extensions and
-  GDAL simply never calls them. Both binaries carry GDAL's fallback diagnostic, *"GDAL/OGR not
-  compiled with libcurl support, remote requests not supported."* Fetch a raster with an HTTP
-  client and open the local file.
+  both platforms, even though `libproj` links libcurl on both: GDAL never calls it. Both
+  `libgdal` binaries carry GDAL's fallback diagnostic, *"GDAL/OGR not compiled with libcurl
+  support, remote requests not supported."* Fetch a raster with an HTTP client and open the
+  local file.
 
 - **`ds.crs == crs_you_wrote` is `False` after a GeoTIFF round trip**, with or without a PROJ
   database. The GeoTIFF keys normalise the WKT, so a semantically identical CRS compares
@@ -292,9 +291,14 @@ above were established — and validate on a device or emulator before shipping.
   a [`rasterio.Env()`](https://rasterio.readthedocs.io/en/stable/api/rasterio.env.html#rasterio.env.Env)
   entered around a call is seen by the module doing the I/O, and `rasterio.shutil` resolves
   the same drivers `rasterio.open` does. The iOS-only wrinkle is invisible from Python: flet
-  relocates each extension into its own framework while the dylib stays a plain file in
-  `opt/lib`, so `rasterio/__init__.py` loads it `RTLD_GLOBAL` before the first extension
-  import. Without that the import fails with `Library not loaded: @rpath/libgdal.dylib`.
+  relocates each extension into its own framework while the dylibs stay plain files in
+  `opt/lib`, so `rasterio/__init__.py` loads `libproj` and then `libgdal` `RTLD_GLOBAL` before
+  the first extension import.
+
+- **`import rasterio` prints `Warning 3: Cannot find gdalvrt.xsd (GDAL_DATA is not defined)`
+  to stderr, and it is expected.** `flet-libgdal` ships no GDAL data directory, and rasterio's
+  import probes for one. It stops nothing: with rasterio's own `gdal_data` hidden on a desktop,
+  the import, EPSG lookups and a GeoTIFF round trip all still work.
 
 - **GEOS is not compiled in**, so OGR geometry predicates and operations are unavailable. Not a
   mobile-only limitation: rasterio's own PyPI wheels report `__geos_version__` as `'0.0.0'`
@@ -307,19 +311,20 @@ above were established — and validate on a device or emulator before shipping.
 
 ### Recipe shape
 
-Two recipes: `flet-libgdal` builds GDAL, this one consumes it. `patches/mobile.patch` explains
-its own hunk and `meta.yaml` comments its `script_env` next to it, so what is left here is
-shape and the bump checklist.
+`flet-libproj` builds PROJ, `flet-libgdal` builds GDAL against it, and this recipe consumes
+both. Each patch explains itself in its preamble and `meta.yaml` comments its `script_env`
+next to it, so what is left here is shape and the bump checklist.
 
 **Everything this page warns about is a `flet-libgdal` decision, not a rasterio one.** The
 eleven-driver registry comes from `-DGDAL_BUILD_OPTIONAL_DRIVERS=OFF` /
-`-DOGR_BUILD_OPTIONAL_DRIVERS=OFF`; the missing `GDAL_DATA` and `proj.db` come from
-`rm -rf $PREFIX/{bin,share}` in `flet-libgdal/build.sh` and `flet-libproj/build.sh`; the absent
+`-DOGR_BUILD_OPTIONAL_DRIVERS=OFF`; the missing `GDAL_DATA` comes from
+`rm -rf $PREFIX/{bin,share}` in `flet-libgdal/build.sh`, and `proj.db` is the one file
+`flet-libproj/build.sh` keeps from its `share/`; the absent
 libcurl comes from `-DGDAL_USE_CURL=OFF` on Android and `-DGDAL_USE_EXTERNAL_LIBS=OFF` on iOS.
 A `flet-libgdal` bump can therefore invalidate most of this README without the rasterio recipe
 changing a line.
 
-**The linkage split is the whole iOS story.** On Android all fifteen extensions name exactly
+**One libgdal is the property to protect.** On Android all fifteen extensions name exactly
 `libm.so`, `libgdal.so`, `libpython3.<minor>.so`, `libdl.so` and `libc.so` in `DT_NEEDED`, plus
 `libc++_shared.so` on `_warp`, `_filepath` and `_fill`, with no `RUNPATH` or `RPATH` anywhere.
 `libgdal.so` carries `SONAME libgdal.so`, so serious_python's flattening of every wheel `.so`
@@ -331,26 +336,24 @@ chain. Sizes on cp314, in bytes: arm64-v8a 3,356,840 of rasterio extension again
 of `libgdal.so` and 7,513,872 of PROJ chain; armeabi-v7a 2,242,516 / 9,702,048 / 5,227,468;
 x86_64 3,352,952 / 15,283,480 / 8,347,680.
 
-On iOS `flet-libgdal` ships `libgdal.dylib`, and all fifteen extensions name
+On iOS `flet-libgdal` ships `libgdal.dylib` (install id `@rpath/libgdal.dylib`, its only
+`@rpath` dependency `@rpath/libproj.dylib`), and all fifteen extensions name
 `@rpath/libgdal.dylib` in `otool -L` — the same shape as Android's `DT_NEEDED libgdal.so`.
 None of them *defines* `GDALAllRegister`; `_env` imports it, which is the module that calls
-it. That is the property to protect on every bump, and it is one command:
+it. Check that on every bump; it is one command:
 
     nm -a <ext> | grep " [tT] _GDALAllRegister"     # must be empty for every extension
 
-**Why it matters more here than the size suggests.** A static `libgdal.a` gets copied into
-each extension that links it, so each would own a private driver registry. rasterio resolves
-driver names in three modules — `_base`, `_io` and `shutil` — while `rasterio.Env()`
-registers in `_env`, so a static build silently splits the table that registers from the
-tables that look up. `shutil` is the one to remember: `rasterio.shutil.exists()` identifies a
-format by asking every registered driver, and asking none of them returns False rather than
-raising, so it reports a file it just wrote as absent.
+**Why it matters.** A static `libgdal.a` is copied into each extension that links it, so each
+gets a private driver registry. rasterio resolves driver names in three modules — `_base`,
+`_io` and `shutil` — while `rasterio.Env()` registers in `_env`, so a static link silently
+splits the table that registers from the tables that look up. `shutil` is the one to
+remember: `rasterio.shutil.exists()` identifies a format by asking every registered driver,
+and asking none of them returns False rather than raising, so it reports a file it just
+wrote as absent.
 
-Find those modules in the **generated C**, never the linked binary — a static GDAL puts
-roughly 41 `GDALGetDriverByName` and 121 `GDALOpen` call sites inside *every* extension,
-`crs` and `_version` included, and defines the registration symbols everywhere, so neither
-`nm` nor a raw `otool -tV` count separates rasterio's own lookups from GDAL's internals.
-Grepping `rasterio/*.c` in an Android wheel does.
+Find those modules by grepping the generated C — `rasterio/*.c` in an Android wheel — which
+holds rasterio's own call sites and none of GDAL's.
 
 All fifteen iOS extensions are `MH_DYLIB`, so forge's `MH_BUNDLE` conversion has nothing to
 do, and `otool -L` on each lists its own install name, `@rpath/libgdal.dylib`,
@@ -360,20 +363,25 @@ do, and `otool -L` on each lists its own install name, `@rpath/libgdal.dylib`,
 
 Two smaller platform differences worth knowing. Android's `libproj.so` links
 `libsqlite3_python.so` from Flet's Python bundle while iOS binds the system
-`/usr/lib/libsqlite3.dylib`, so whichever `proj.db` a consumer supplies is opened by a
-different SQLite on each platform. And `flet-libgdal`'s `gdalplugins/drivers.ini` is **not** a
-capability list: it is a 2,787-byte ordering table naming 251 drivers, installed
-unconditionally, whose own header says it keeps in sync with `gdalallregister.cpp` — reading it
-as what was compiled in over-counts the registry twenty-three-fold. On Android it never reaches
-the device at all, because serious_python copies a `flet-lib*` `opt/` tree into `jniLibs` with
-a `**/*.so` glob and drops every non-library file.
+`/usr/lib/libsqlite3.dylib`, so `proj.db` is opened by a different SQLite on each platform.
+And `flet-libgdal`'s `gdalplugins/drivers.ini` is **not** a capability list: it is a
+2,787-byte ordering table naming 251 drivers, installed unconditionally, whose own header says
+it keeps in sync with `gdalallregister.cpp` — reading it as what was compiled in over-counts
+the registry twenty-three-fold. On Android it never reaches the device at all, because
+serious_python copies a `flet-lib*` `opt/` tree into `jniLibs` with a `**/*.so` glob and drops
+every non-library file.
 
 ### Upgrade hazards
 
 - **Bump `flet-libgdal` and rasterio together, and re-read the consumer claims off the built
-  wheels.** The driver set, the codec set, the missing PROJ database and the absent libcurl are
-  all decided there, and none of them turns a build red.
-- **The build is steered entirely through the environment branch the patch adds** —
+  wheels.** The driver set, the codec set and the absent libcurl are all decided there, and
+  none of them turns a build red.
+- **The database has two carriers, and neither is a rasterio file.** iOS reads
+  `flet-libproj`'s `opt/share/proj/proj.db`; Android reads pyproj's
+  `pyproj/proj_dir/share/proj/proj.db`, bundled only by pyproj's Android build. A bump of
+  either that moves or drops the file turns EPSG codes into `CRSError` with a green build.
+  `ios-libgdal-preload.patch` hard-codes both paths.
+- **The build is steered entirely through the environment branch `mobile.patch` adds** —
   `GDAL_INCLUDE_PATH`, `GDAL_LIB_PATH`, `GDAL_LIBS` — which exists only because upstream still
   uses `setup.py`. A move to meson or scikit-build-core retires both the patch and the
   `script_env` block at once: treat that release as a redesign, not a bump.
@@ -387,42 +395,48 @@ a `**/*.so` glob and drops every non-library file.
 ### Re-verification checklist
 
 - **The wheel layout.** Every extension filename must still carry the ABI tag its own runtime
-  matches on, and the wheel must still contain no data file of any kind — that is what keeps an
-  `extract_packages` entry unnecessary and what the Install section quietly depends on.
+  matches on, and the wheel must still contain no data file of any kind — that is what keeps
+  rasterio itself out of `extract_packages`; only pyproj needs it, for the database.
+- **EPSG codes on both platforms.** With pyproj installed and extracted, as `meta.yaml`
+  arranges, `test_epsg_codes_work_where_proj_db_reached_the_device` must take its resolving
+  branch on iOS and Android alike. It passes in the raising branch too, so check which ran.
 - **The driver set and the codec set**, from the symbol tables on both platforms. Android's
   `libgdal.so` is stripped, so cross-check by dynamic symbols and codec marker strings rather
   than by `nm`.
-- **The linkage split.** Android: `DT_NEEDED` still naming `libgdal.so` by bare soname,
+- **The linkage.** Android: `DT_NEEDED` still naming `libgdal.so` by bare soname,
   `libc++_shared.so` on exactly `_warp`/`_filepath`/`_fill`, the libproj chain intact, and
-  16 KB `PT_LOAD` alignment everywhere. iOS: still fifteen `MH_DYLIB`, still exactly ten
-  carrying GDAL, `otool -L` still naming no libcurl, libtiff or libproj. If iOS ever links
-  dynamically, the Install warning and every size figure on this page change.
+  16 KB `PT_LOAD` alignment everywhere. iOS: still fifteen `MH_DYLIB`, each naming
+  `@rpath/libgdal.dylib` in `otool -L` and none naming libcurl, libtiff or libproj, and
+  `libgdal.dylib`'s only `@rpath` dependency still `@rpath/libproj.dylib`.
 - **The threading crash.** SIGBUS on a shared dataset handle is GDAL's behaviour, not
   rasterio's, so a GDAL bump can move it in either direction.
 - **The sizes and timings are measured.** Re-measure from byte counts rather than adjusting by
-  eye or reading `du -h`, which is binary; the iOS total in particular is the whole argument
-  for budgeting a quarter of a gigabyte.
+  eye or reading `du -h`, which is binary.
 
 ### Coverage gaps
 
-- **Two of the four tests assert less than they appear to.** `test_gdal_version` is a genuine
-  canary for the `GDAL_LIBS` chain. `test_drivers_listed` is not: `is_blacklisted` is `return
-  mode in blacklist.get(name, ())`, a pure-Python dict lookup with no `@ensure_env` decorator,
-  so only the *import* of `rasterio.drivers` touches native code and the registry itself goes
-  untested. Those two passed on iOS throughout the period no raster could be opened there,
-  which is the whole argument for `test_geotiff_round_trip` and
-  `test_shutil_sees_and_copies_a_dataset` beside them: one covers `_base` and `_io`, the other
-  `shutil`, and between them every module that resolves a driver name. Worth adding still: an
-  assertion over `rasterio.Env().drivers()` inside its context, naming the exact eleven keys so
-  a driver appearing is as red as one vanishing, and one that `CRS.from_epsg(4326)` raises
-  `CRSError`.
+- **`test_gdal_version` and `test_drivers_listed` do not exercise the registry.** The first
+  proves `_base` loaded and linked `libgdal`. The second asserts less than it appears to:
+  `is_blacklisted` is `return mode in blacklist.get(name, ())`, a pure-Python dict lookup with
+  no `@ensure_env` decorator, so only the *import* of `rasterio.drivers` touches native code.
+  Both pass on a build whose registry is split, which is why `test_geotiff_round_trip` and
+  `test_shutil_sees_and_copies_a_dataset` sit beside them: one covers `_base` and `_io`, the
+  other `shutil`, and between them every module that resolves a driver name. Worth adding
+  still: an assertion over `rasterio.Env().drivers()` inside its context, naming the exact
+  eleven keys so a driver appearing is as red as one vanishing.
+- **The EPSG test proves behaviour matches the database it found, not that one was found.**
+  CI always installs and extracts pyproj, so an Android app missing either half is never run;
+  its raising branch is checked only on a desktop with `PROJ_DATA` pointed at an empty
+  directory.
 - **Nothing covers whether an `Env()` option reaches the extension doing the I/O on iOS.** The
-  claim under **Things to know** that it does not follows from the linkage, not from a run.
+  claim under **Things to know** that it does follows from the linkage, not from a run.
 - **The threading results record no platform.** Nothing here says where the SIGBUS runs were
   made, nothing in CI exercises concurrency, and the example is written to avoid it. Say where
   when you re-run them.
-- **Neither `proj.db` pairing has been run on a device.** The layout-1.4 and layout-1.6
-  reasoning in **Coordinate systems** is host reasoning; record the result if someone tries it
-  on a phone.
+- **The shim's database route is verified on device through its siblings.** Their
+  equivalent `PROJ_DATA` shims resolved EPSG codes for pyproj and fiona on an iPhone
+  simulator, and for pyproj and fiona+pyproj on an Android emulator; no on-device run of
+  rasterio's own EPSG test is recorded here. Nor is a `PROJ_DATA` the app sets itself, on
+  either platform.
 - Nothing on device covers overviews, the `.aux.xml` sidecar, `/vsimem`, `rasterio.warp`, or a
   raster larger than the 1024×1024 the example writes.

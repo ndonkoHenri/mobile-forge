@@ -13,8 +13,8 @@ import pyogrio
 from pyogrio.raw import read as ogr_read
 from pyogrio.raw import write as ogr_write
 
-# A PROJ string rather than "EPSG:4326". Naming a CRS by authority code means
-# looking the code up in proj.db, and the mobile wheels carry no PROJ database.
+# A PROJ string rather than "EPSG:4326". A code is a lookup in proj.db, which
+# reaches Android only through an extracted pyproj; this needs no database.
 CRS = "+proj=longlat +datum=WGS84 +no_defs"
 
 # Two of the three file formats this GDAL can write, and the file name each
@@ -82,10 +82,8 @@ def registered_drivers():
     """Return the driver table as (name, modes) pairs, `r` and `w` per name.
 
     This reads the registry through pyogrio's `_ogr` extension, while reads and
-    writes go through `_io`. On Android both are views of one shared libgdal;
-    on iOS they are separate statically linked copies, each with its own
-    registry, so a full table here is not on its own evidence that a round trip
-    will run — which is why the app runs one.
+    writes go through `_io`, so a full table here is not on its own evidence
+    that a round trip will run — which is why the app runs one.
     """
     return sorted(pyogrio.list_drivers().items())
 
