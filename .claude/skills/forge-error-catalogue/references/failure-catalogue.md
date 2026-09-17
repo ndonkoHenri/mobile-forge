@@ -1759,10 +1759,10 @@ recipe that borrows this static-link pattern must apply the same per-platform ga
 
 **Cause:** the build is GREEN but a CMake `OBJECT` library's objects — meant to link
 straight into the consuming target — do **not** propagate into an iOS static-framework
-link. The consuming code keeps its references (iOS links with `-undefined
-dynamic_lookup`, so undefined symbols are allowed at *link* time), and the symbol has no
-provider at *runtime* → dlopen fails on first `import`. opencv 5's vendored **MLAS**
-(`3rdparty/mlas` OBJECT lib → `opencv_dnn`) does exactly this: `import cv2` dies on
+link. The consuming code keeps its references (opencv's Python CMake links Apple modules
+with `-undefined dynamic_lookup`, so undefined symbols are allowed at *link* time), and the
+symbol has no provider at *runtime* → dlopen fails on first `import`. opencv 5's vendored
+**MLAS** (`3rdparty/mlas` OBJECT lib → `opencv_dnn`) does exactly this: `import cv2` dies on
 `MlasGemmBatch`. **Key lesson: a green iOS wheel ≠ a loadable one — you cannot `import`
 an iOS wheel on the macOS build host, so only the sim/emulator (or CI mobile test)
 catches this class.**
@@ -1781,12 +1781,14 @@ app's Python. opencv-python 5.0.0.93 `mobile.patch`.
 ### iOS: `symbol not found in flat namespace '_<sym>'` at dlopen, where the symbol belongs to a TRANSITIVE dep of a static `flet-lib*` (`_geod_init`, `_TIFFClientOpen`, `_psl_builtin`, …)
 
 **Cause:** distinct from the OBJECT-library entry above, and far more common in the
-geospatial chain. Every iOS `flet-lib*` is a **static archive** (`-DBUILD_SHARED_LIBS=OFF`).
-When the upper library was linked at *its* build time, the linker kept only the object
-files whose symbols that library itself referenced; anything a *consumer* would later need
-was left undefined inside the `.a`. Nothing complains at link time, because iOS links the
-extension with `-undefined dynamic_lookup`. At runtime, dyld resolves the flat namespace
-eagerly at dlopen and aborts on the first miss.
+geospatial chain. It needs a `flet-lib*` built as a **static archive** for iOS
+(`-DBUILD_SHARED_LIBS=OFF`) and an extension that links only the top library. An archive is
+never linked on its own, so the objects the extension pulls out of `libgdal.a` keep their
+references into `libproj.a`, `libtiff.a` or `libpsl.a`, and nothing on the link line
+provides them. That is a link error unless the link carries `-undefined dynamic_lookup` (a
+recipe's `LDFLAGS`, the project's own CMake as in opencv, or forge's cargo flags; forge's
+default iOS `LDFLAGS` have none); with it the link passes, and at runtime dyld resolves the
+flat namespace eagerly at dlopen and aborts on the first miss.
 
 The tell is a symbol that plainly belongs to a *different* library than the one you linked:
 `import fiona` failing on `_geod_init` (that is PROJ, not GDAL), or on `_TIFFClientOpen`
@@ -2055,9 +2057,9 @@ call that *uses* the table fails or lies. Seen as
 `FionaNullPointerError` (fiona) — all on iOS only, all in a process that had just
 listed the thing it then could not find.
 
-**Cause:** `flet-libgdal` (and any `flet-lib*` that ships only a `.a` on iOS) is
-linked separately into EVERY extension of the consumer. Each copy carries its own
-copy of the library's process-global state — for GDAL, the driver registry. The
+**Cause:** any `flet-lib*` that ships only a `.a` on iOS (as `flet-libgdal` did before
+build 3) is linked separately into EVERY extension of the consumer. Each copy carries
+its own copy of the library's process-global state — for GDAL, the driver registry. The
 module that registers and the module that looks up are different extensions, so
 one populates a table the other never sees. Android is immune: one shared
 `libgdal.so`, one registry.
@@ -2065,9 +2067,10 @@ one populates a table the other never sees. Android is immune: one shared
 Generalises past GDAL to any static lib with a register-then-lookup global: codec
 tables, plugin registries, `atexit`-style handler lists, cached config.
 
-**Fix:** call the registration function at module scope in every extension that
-does a lookup. `GDALAllRegister()` is idempotent, so the same patch is a no-op on
-Android. See `recipes/{rasterio,pyogrio,fiona}/patches/ios-driver-registry.patch`.
+**Interim workaround**, superseded by THE COMPLETE FIX below and only for a static lib
+that cannot go shared: call the registration function at module scope in every
+extension that does a lookup. `GDALAllRegister()` is idempotent, so the same patch is
+a no-op on Android.
 
 **Finding the modules that need it — do NOT read the linked binary.** A static
 GDAL puts ~41 `GDALGetDriverByName` and ~121 `GDALOpen` call sites inside every
@@ -2086,8 +2089,8 @@ done
 ```
 
 Equivalently, grep the sdist's `.pyx` (declarations live in `.pxd`/`gdal.pxi`, so
-only `.pyx` hits are real calls). rasterio build 12 shipped with `_base` and `_io`
-patched and `shutil` missed this way.
+only `.pyx` hits are real calls). rasterio's first registry patch covered `_base` and
+`_io` and missed `shutil`, which this grep finds.
 
 **Verify the fix in the shipped wheel** with call sites, not definitions:
 `otool -tV <ext>.so | grep -cE 'bl\s+.*_GDALAllRegister'` must be ≥1 for each
@@ -2097,11 +2100,12 @@ module the grep above named.
 `__gdal_version__`, a driver count — all live in the module that registers, so
 they pass while every read and write on that platform is broken. A test has to
 write a file and read it back. Watch for two traps: (1) a write needs a CRS spelled
-as a proj-string, never `EPSG:4326`, since these chains ship no `proj.db` and the
-test would fail at the CRS before reaching the registry; (2) some entry points fail
-*quietly* — `rasterio.shutil.exists()` identifies a format by asking every
-registered driver, and asking none of them returns `False` rather than raising, so
-assert the `True`.
+as a proj-string, never `EPSG:4326`: an authority code needs `proj.db` on the device
+(on Android it arrives only inside an extracted pyproj), so without it the test would
+fail at the CRS before reaching the registry — test EPSG codes separately; (2) some
+entry points fail *quietly* — `rasterio.shutil.exists()` identifies a format by asking
+every registered driver, and asking none of them returns `False` rather than raising,
+so assert the `True`.
 
 **Limit:** this makes the package usable, not correct. The copies stay separate
 library instances, so configuration set through one extension (`rasterio.Env()`,
@@ -2139,22 +2143,30 @@ device for all five consumers; it retires the per-extension registration patches
    much longer `@rpath/opt.lib.libX.framework/opt.lib.libX`, setuptools links with
    no padding, and on failure `flet build` STILL EXITS 0 having shipped an app with
    no site-packages (reads on device as a bare `ModuleNotFoundError`).
-6. **Consumers need a ctypes preload shim** in `__init__.py`: flet relocates each
-   extension into its own framework while the dylib stays a plain file in
-   `opt/lib`, and nothing on a relocated extension's rpath resolves it, so load it
-   `RTLD_GLOBAL` first (with a `<name>.fwork` marker fallback). Precedents: `av`
-   (49 extensions), `pyarrow`, `pymupdf`. **Possibly redundant once 5 is in:** pyproj
-   build 2's preload loop was a silent no-op (`("libproj")` is a string, so it iterated
-   characters) and its iOS tests still passed on the simulator (CI run 33171345776) —
+6. **Consumers carry a ctypes preload shim** in `__init__.py`. flet moves each
+   extension and each dylib into its own framework, rewrites the extensions' `@rpath`
+   links to match (step 5), and leaves a `<name>.fwork` marker in `opt/lib` holding the
+   app-relative path. The shim loads the dylib `RTLD_GLOBAL` before the first extension
+   import — from `opt/lib`, or through the marker. Precedents: `av` (49 extensions),
+   `pyarrow`, `pymupdf`. **Possibly redundant once 5 is in:** an earlier pyproj build's
+   preload loop was a silent no-op (`("libproj")` is a string, so it iterated characters)
+   and its iOS tests still passed on the simulator (CI run 33171345776) —
    serious_python's install-name rewrite plus the app's `@executable_path/Frameworks`
    rpath may resolve the dylib alone. Unverified for the GDAL consumers; test removal on
    one before copying the shim into a new recipe.
 
 **Verify:** `file` → `Mach-O … dynamically linked shared library`; `otool -D` →
-`@rpath/libX.dylib`; `otool -L` on the lib → system libraries only; and on every
-consumer extension `nm -a <ext> | grep " [tT] _<RegisterFn>"` must be EMPTY while
-`otool -L` names `@rpath/libX.dylib`. A definition means a static lib crept back
-in and the registry is split again.
+`@rpath/libX.dylib`; `otool -L` on the lib → its own id, system libraries, and at most
+a sibling shared `flet-lib*` by `@rpath` (libgdal names `@rpath/libproj.dylib`; libproj
+names none); and on every consumer extension `nm -a <ext> | grep " [tT] _<RegisterFn>"`
+must be EMPTY while `otool -L` names `@rpath/libX.dylib`. A definition means a static lib
+crept back in and the registry is split again. Also `otool -l <dylib> | grep -A4
+LC_BUILD_VERSION` on EVERY slice: `minos 13.0` (14.0 on arm64-simulator). A C++ library
+whose cmake call lacks `-DCMAKE_CXX_FLAGS="$CFLAGS"` links for the toolchain default
+instead — flet-libproj 11 first came out with legacy `LC_VERSION_MIN_IPHONEOS 7.0` on the
+device slice and `5.0` on x86_64-simulator, which marks that slice as a DEVICE binary.
+CMake seeds only `CMAKE_C_FLAGS` from the environment, and forge's CFLAGS is what carries
+the deployment target.
 
 **Watch for a downloads/ collision** when the library recipe and a Python-binding
 recipe wrap the same upstream project: a build.sh recipe's archive is named after

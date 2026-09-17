@@ -59,9 +59,9 @@ Key structural facts:
   canonical (first-listed, i.e. 3.12) leg**. On the 3.13/3.14 legs they are
   filtered out of the package list entirely.
 - Mobile tests run only on the legs listed in `mobile_test_pythons` (default: `3.12`).
-- The mobile test bumps local wheels' build tag to `9999` in `dist-test/` so
-  pip prefers them over same-version wheels already published on
-  pypi.flet.dev.
+- The mobile test bumps local `cp`-tagged wheels' build tag to `9999` in
+  `dist-test/` so pip prefers them over same-version wheels already published
+  on pypi.flet.dev. A `py3-none` `flet-lib*` wheel is copied with its own tag.
 
 ## Trigger decision tree
 
@@ -282,7 +282,7 @@ Seen on the shared-libgdal/libproj work: push run 33118055088 failed every iOS j
 while the dispatched run with `prebuild_recipes="flet-libproj,flet-libgdal"` was green.
 Android passed throughout, because its libraries were already shared.
 
-Two consequences:
+Consequences:
 
 - **Validate such a chain by dispatch, naming every library in `prebuild_recipes` in
   dependency order.** Expect the accompanying push run to be red on the link.
@@ -291,6 +291,15 @@ Two consequences:
   library ships. A dispatch prebuilds, so a test's "library not present" branch never
   executes there. The PROJ database work shipped a test naming `CRSError` for the
   no-database case; only the push run reached that branch, and it raised `DataDirError`.
+- **A `test: requires:` dep is the silent variant under Chains, even in a dispatch**: it
+  resolves from the index unless `prebuild_recipes` names it too. Dispatch run 35229217008
+  prebuilt only `flet-libproj,flet-libgdal`, so the fiona/gdal/rasterio/pyogrio Android testers
+  installed published `pyproj-3.7.2-1`, which has no `proj.db`, and their either-branch EPSG
+  tests passed through the no-database branch. A passing either-branch test cannot show which
+  branch ran: read `Downloading pyproj-…` in the job log (`console.log` warns only for pyogrio,
+  whose import checks for PROJ data and pulls in pyproj), or probe with a throwaway commit whose
+  test fails the branch it should not take. Adding `pyproj` to `prebuild_recipes` (probe run
+  35239232808) put build 2 in every tester and the database branch ran on both platforms.
 - **Publish order matters at merge.** The libraries must reach the index before or with
   their consumers, or the first consumer build after merge links a stale library.
 

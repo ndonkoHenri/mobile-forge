@@ -143,10 +143,10 @@ instead of re-deriving it.
   gets its own copy of the library's process globals and the module that registers is not
   the one that looks up** ("No such driver registered" / "Could not obtain driver" / a
   silently wrong `False`; real fix = build the `flet-lib*` SHARED for iOS, done for
-  flet-libgdal + flet-libproj, which needs a de-versioned `.dylib`, headerpad on the
-  consumers and a ctypes preload shim; interim workaround = call the registration function
-  in every extension that looks up, found from the GENERATED C since a static lib defeats
-  `nm`), and **iOS app crashes at launch with a
+  flet-libgdal + flet-libproj, which needs a de-versioned `.dylib` and headerpad on the
+  consumers, and the consumers carry a ctypes preload shim; interim workaround = call the
+  registration function in every extension that looks up, found from the GENERATED C since
+  a static lib defeats `nm`), and **iOS app crashes at launch with a
   0-byte `console.log` → `dyld: Library not loaded: @rpath/lib<X>.dylib` for a chain
   of interdependent bundled dylibs (pyarrow, llama)** → **serious_python #223**:
   reconcile framework install-ids + `@rpath` deps to the dotted-framework paths
