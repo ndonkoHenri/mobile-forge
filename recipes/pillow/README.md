@@ -6,9 +6,10 @@ toolkit will not do for you — shrink a camera photo before uploading it, cut a
 stamp a caption onto a picture, turn computed pixels into something
 [`ft.Image`](https://flet.dev/docs/controls/image/) can display — on the device, offline.
 
-These wheels are a **JPEG and PNG** build. WebP, AVIF, JPEG 2000, compressed TIFF and colour
-management are not compiled in, so code that opens those files on your laptop raises on the
-phone. The complete list is in [Things to know](#things-to-know).
+These wheels read and write **JPEG, PNG and WebP**, animated WebP included, and render text
+through FreeType. AVIF, JPEG 2000, compressed TIFF and colour management are not compiled in,
+so code that opens those files on your laptop raises on the phone. The complete list is in
+[Things to know](#things-to-know).
 
 ## Install
 
@@ -165,15 +166,18 @@ nothing else triggers it.
 
 ### App size
 
-Roughly 0.5–0.6 MB compressed per Android ABI, unpacking to about 1.5–1.8 MB; the iOS device
-wheel is about 1.2 MB and unpacks to about 3.4 MB. Android's figure is not the whole cost:
-`libjpeg.so` (0.6 MB) and `libfreetype.so` (0.8 MB) ship beside it once per ABI, so budget
-around 3 MB per Android ABI rather than 1.8 — which is what makes narrowing `target_arch` worth
-more here than the wheel size alone suggests. iOS links those statically, and the figure above
-already includes them. Those are decimal MB, so re-measure
-with a byte count rather than `du -h`, which reports binary units and shows a smaller number
-for the same file. Almost all of it is the `_imaging` family of extensions, so there is no
-data directory worth removing with
+Roughly 0.5–0.6 MB compressed per Android ABI, unpacking to 1.5–1.8 MB; the iOS wheels are
+1.5–1.6 MB compressed and unpack to 4.0–4.2 MB. The two are not comparable: on Android,
+JPEG, FreeType and WebP are separate shared libraries that the wheel pulls in as
+[`flet-libjpeg`](../flet-libjpeg), [`flet-libfreetype`](../flet-libfreetype) and
+[`flet-libwebp`](../flet-libwebp) and that ship beside it once per ABI — `libjpeg.so` alone is
+0.6 MB and `libfreetype.so` 0.8 MB — so the real Android cost is well above the wheel figure,
+which is what makes narrowing `target_arch` worth more here than the wheel size suggests. On
+iOS all three are linked statically into the extensions, so the iOS figure is already the whole
+cost and nothing else is installed. Those are decimal MB, so re-measure with a byte count
+rather than `du -h`, which reports binary units and shows a smaller number for the same file.
+Almost all of it is the `_imaging` family of extensions plus `_webp`, so there is no data
+directory worth removing with
 [`[tool.flet.cleanup]`](https://flet.dev/docs/publish/#compilation-and-cleanup).
 
 This is a small payload by mobile standards, but the usual levers still apply if you are
@@ -185,8 +189,8 @@ packaging and compression decide that.
 ### Other considerations
 
 **A desktop `flet run` has more codecs than the device does.** That run uses PyPI's own
-Pillow wheel, which opens WebP, AVIF, JPEG 2000 and compressed TIFF — none of which open on
-the phone. Every one of those is a working desktop run and a crash on device, and the format
+Pillow wheel, which opens AVIF, JPEG 2000 and compressed TIFF — none of which open on the
+phone. Every one of those is a working desktop run and a crash on device, and the format
 comes from whatever the user picked in their gallery, so a desktop pass proves nothing about
 image input. Validate on a device or emulator/simulator, and if you want to see what you
 actually have, print
@@ -208,11 +212,10 @@ way in your own code: derive font and image paths from `FLET_ASSETS_DIR`, not fr
   [`ios_13_0_*` wheels](https://pypi.org/project/pillow/#files) for CPython 3.13 and newer,
   and **no Android wheels at all**. A bare `"pillow"` therefore resolves upstream's build on
   an iOS leg — where it is newer, so it wins on version — and this index's build on Android.
-  Upstream's is the fuller one: it statically links JPEG 2000, libtiff, WebP, AVIF and
-  LittleCMS, ships eight extension modules against this wheel's five, and is roughly 4.2 MB
-  where this one is 1.3 MB. The failure mode is a phone-only bug that never reproduces on the
-  other phone — `Image.open("photo.webp")` succeeding on iOS and raising on Android, from one
-  codebase and one dependency line.
+  Upstream's is the fuller one: beyond the JPEG, PNG, WebP and FreeType both builds have, it
+  statically links JPEG 2000, libtiff, AVIF and LittleCMS. The failure mode is a phone-only bug
+  that never reproduces on the other phone — `Image.open("photo.avif")` succeeding on iOS and
+  raising on Android, from one codebase and one dependency line.
 
   Pin the version if you want one Pillow everywhere:
 
@@ -224,17 +227,20 @@ way in your own code: derive font and image paths from `FLET_ASSETS_DIR`, not fr
   build tag outranks its absence. Verified on 2026-08-23 — with the pin, an iOS 3.14 app
   bundles this wheel even though PyPI offers the same version for that slice.
 
-- **Two codecs, and that is the whole list.**
+- **JPEG, PNG and WebP, and that is the whole list.**
   [`PIL.features.get_supported_codecs()`](https://pillow.readthedocs.io/en/stable/reference/features.html#PIL.features.get_supported_codecs)
   returns `['jpg', 'zlib']` on device, where the desktop PyPI wheel of the same version
-  returns `['jpg', 'jpg_2000', 'zlib', 'libtiff']`. What that costs you:
+  returns `['jpg', 'jpg_2000', 'zlib', 'libtiff']`. WebP and AVIF never appear in that list,
+  because Pillow registers them as modules rather than codecs; ask
+  [`features.check("webp")`](https://pillow.readthedocs.io/en/stable/reference/features.html#PIL.features.check),
+  which is `True` here. What the difference costs you:
 
   | | these wheels | desktop PyPI wheel |
   | --- | --- | --- |
   | JPEG | yes | yes |
   | PNG | yes | yes |
   | FreeType text — `ImageFont`, `ImageDraw.text` | yes | yes |
-  | WebP | no | yes |
+  | WebP, including animated | yes | yes |
   | AVIF | no | yes |
   | JPEG 2000 | no | yes |
   | TIFF, compressed | no | yes |
@@ -246,8 +252,8 @@ way in your own code: derive font and image paths from `FLET_ASSETS_DIR`, not fr
   `open()` or `load()` rather than at `import`.
 
 - **What failure looks like.** It differs by format, which matters when you are catching it.
-  A WebP or AVIF file warns `image file could not be identified because WEBP support not
-  installed` and then raises
+  An AVIF file warns `image file could not be identified because AVIF support not installed`
+  and then raises
   [`UnidentifiedImageError`](https://pillow.readthedocs.io/en/stable/PIL.html#PIL.UnidentifiedImageError)
   — the plugin declines the file, so it looks like a corrupt image rather than a missing
   codec, and a `try`/`except` written for bad user input will swallow it. A JPEG 2000 file
@@ -255,19 +261,19 @@ way in your own code: derive font and image paths from `FLET_ASSETS_DIR`, not fr
   available`; a compressed TIFF fails the same way with `decoder libtiff not available`.
   Uncompressed TIFF is the exception that works, because Pillow decodes that one itself.
 
-- **What `Image.save` can produce** is the desktop wheel's list minus exactly WebP, AVIF and
-  JPEG 2000, so JPEG, PNG, GIF, BMP, TIFF and PDF are all there. Two edges are worth knowing:
+- **What `Image.save` can produce** is the desktop wheel's list minus exactly AVIF and
+  JPEG 2000, so JPEG, PNG, WebP (lossless, lossy with alpha, EXIF, and animated through
+  `save_all=True`), GIF, BMP, TIFF and PDF are all there. Two edges are worth knowing:
   TIFF writes only uncompressed, so `compression="tiff_lzw"` (or `packbits`,
   `tiff_adobe_deflate`, `jpeg`) raises `OSError: encoder libtiff not available`; and asking
-  for a format that is absent entirely is a plain `KeyError: 'WEBP'`, thrown by the format
+  for a format that is absent entirely is a plain `KeyError: 'AVIF'`, thrown by the format
   lookup before any encoding starts.
 
-- **`ft.Image` decodes more formats than Pillow does.** Flutter, not Pillow, draws what you
-  put on screen, so `ft.Image(src=blob)` displays a WebP fine in an app where
-  `Image.open(io.BytesIO(blob))` raises on the same bytes. The asymmetry bites when you
-  accept a file from the user,
-  show it successfully, and only fail once you try to resize it. Encode as PNG or JPEG in the
-  other direction and both sides agree.
+- **An image that displays is not an image Pillow can open.** Flutter, not Pillow, decodes
+  what `ft.Image(src=blob)` puts on screen, so the two sets of formats are independent. The
+  asymmetry bites when you accept a file from the user, show it successfully, and only fail
+  once you try to resize it. Encode as PNG, JPEG or WebP in the other direction and both sides
+  agree.
 
 - **The desktop-integration modules are inert here.**
   [`ImageGrab.grab()`](https://pillow.readthedocs.io/en/stable/reference/ImageGrab.html)
@@ -286,8 +292,12 @@ way in your own code: derive font and image paths from `FLET_ASSETS_DIR`, not fr
   essentially every product does, and the GPL arm never applies. The FTL is permissive with one
   active condition: credit FreeType in the documentation of the final product. An
   "Acknowledgements" line in an about screen or store listing satisfies it.
-  [`flet-libjpeg`](../flet-libjpeg), the other native dependency, is permissive with nothing to
-  do. Both ship their licence text under `dist-info/licenses/`.
+  The other native dependencies, [`flet-libjpeg`](../flet-libjpeg) and
+  [`flet-libwebp`](../flet-libwebp) ([BSD-3-Clause](https://spdx.org/licenses/BSD-3-Clause.html)),
+  are permissive too, but binary redistribution asks that their notices appear in the product's
+  documentation (libjpeg's IJG terms also want the Independent JPEG Group credited), so name
+  them in that same acknowledgements line. All three ship their licence text under
+  `dist-info/licenses/`. This is a flag, not legal advice.
 
 ## Build notes (maintainers)
 
@@ -296,18 +306,22 @@ way in your own code: derive font and image paths from `FLET_ASSETS_DIR`, not fr
 Platform guessing is switched off in the patched `setup.py`, so the wheel's feature set is
 exactly the host-dep list in `meta.yaml` and nothing the build runner happens to have
 installed. That is the fact to carry around: **adding a codec means a new `flet-lib*` recipe,
-not a build flag**, which is why WebP, AVIF, JPEG 2000, TIFF and LittleCMS are absent
-together rather than individually, and why the consumer table above can be trusted to match
-`requirements.host`. PNG is the exception that needs no host dep: Pillow implements it in
-Python over its zlib `zip` codec, so the platform's own zlib — the NDK sysroot's on Android,
-`/usr/lib/libz.1.dylib` on iOS — carries it and no `libpng` ends up in any shipped `.so`.
+not a build flag**, which is why WebP is present exactly because `flet-libwebp` is in that
+list, why AVIF, JPEG 2000, TIFF and LittleCMS are absent together rather than individually,
+and why the consumer table above can be trusted to match the host-dep list. PNG is the
+exception that needs no host dep: Pillow implements it in Python over its zlib `zip` codec, so
+the platform's own zlib — the NDK sysroot's on Android, `/usr/lib/libz.1.dylib` on iOS —
+carries it and no `libpng` ends up in any shipped `.so`.
 That is why `LDFLAGS: -lz` is in the recipe and why the codec table has one entry with no
 matching host dep.
 
-The two platforms differ in where the native code ends up, which is what the size figures
-above reflect: on Android `flet-libjpeg` and `flet-libfreetype` stay separate shared
-libraries contributed to the APK per ABI, while on iOS they are linked statically into the
-extension modules. Nothing in the consumer API changes; only the payload shape does.
+The two platforms differ in where the native code ends up, and `meta.yaml` declares the three
+deps differently per SDK because of it. On Android they are shared libraries the extensions
+load (`DT_NEEDED`), staged into `jniLibs`, so they sit under `requirements.host` and appear in
+the wheel's `Requires-Dist`. On iOS they link statically into `_imaging.so` and `_webp.so`, so
+they sit under `requirements.host_build`: extracted for the link but kept out of the metadata,
+so an app does not download ~16 MB of static archives it can never load. Nothing in the
+consumer API changes; only the payload shape does.
 
 ### Upgrade hazards
 
@@ -335,13 +349,16 @@ The consumer sections make claims about the built wheel that a bump can silently
   device.
 - The list of formats `Image.save` accepts and which of them honour `save_all=True`. Those
   are plugin inventories, and Pillow adds and retires plugins between releases.
-- What failure looks like per format — `UnidentifiedImageError` on WebP and AVIF versus the
+- What failure looks like per format — `UnidentifiedImageError` on AVIF versus the
   deferred `OSError: decoder ... not available` on JPEG 2000 and compressed TIFF. It depends
   on whether a plugin declines the file up front or only at `load()`.
 - The glyph coverage attributed to `ImageFont.load_default()`. It comes from a face embedded
   in `ImageFont.py`, so it changes if upstream swaps that face.
 - That `draft()` still reaches the JPEG decoder's scaled-decode path, which is the whole
   basis of the memory advice.
+- The runtime `Requires-Dist`: the Android wheel names `flet-libjpeg`, `flet-libfreetype` and
+  `flet-libwebp`, the iOS wheel names none. A dep moved between `host` and `host_build`
+  changes both the App size advice and what an app downloads.
 - The size figures, compressed and unpacked, on both platforms. Re-measure from the wheels in
   decimal MB rather than scaling the old numbers.
 - That nothing in `PIL` has started opening a data file next to itself, which is what keeps
@@ -350,18 +367,20 @@ The consumer sections make claims about the built wheel that a bump can silently
 
 ### Coverage gaps
 
-`tests/` has four tests: a JPEG open plus PNG round-trip, a bundled-TTF render, the codec
-set, and `load_default()`. The consumer sections above make roughly twenty behavioural
-claims, so a green run is much weaker evidence than it looks. Specifically:
+`tests/` has thirteen tests: a JPEG open plus PNG round-trip, a bundled-TTF render, the
+codec set, `load_default()`, and nine WebP tests — the feature check and registered
+extension, no "support not installed" warning, lossless and lossy decode, lossless (VP8L)
+and lossy-with-alpha (VP8X) encode, an EXIF round-trip, and animated decode and encode. The
+consumer sections above make more behavioural claims than that, so a green run is weaker
+evidence than it looks. Specifically:
 
-- `test_only_jpeg_and_zlib_codecs_are_built` asserts `{"jpg", "zlib"} <= codecs` and the
-  absence of `webp`, `jpg_2000` and `libtiff`. It does not assert the set is exactly those
-  two, so "that is the whole list" remains an inspection claim about the wheel.
-- `test_default_font_needs_no_file` asserts `image.getbbox() is not None` on a white RGB
-  canvas. `getbbox()` trims zero-valued pixels and white is non-zero, so that assertion holds
-  whether or not a single glyph drew. Nothing currently tests that `load_default()` renders,
-  and the ASCII-only coverage claim is untested outright.
-- Untested entirely: every `Image.save` format except PNG, `save_all`, the per-format failure
+- `test_codec_set_matches_the_readme` pins what is in (JPEG, zlib, WebP, FreeType) and the
+  named absentees (JPEG 2000, libtiff, AVIF, LittleCMS), but not that the set is exact, so
+  "that is the whole list" remains an inspection claim about the wheel.
+- `test_default_font_needs_no_file` proves `load_default()` draws something; the ASCII-only
+  coverage claim is untested.
+- Untested entirely: every `Image.save` format except PNG and WebP, `save_all` outside WebP,
+  the per-format failure
   modes, `ImageCms`, the Raqm fallback warning, `draft()`, `ImageGrab`/`show()`/`ImageTk`,
   and resolving a font through `FLET_ASSETS_DIR` — the example is the only thing that
   exercises the bytes-to-`ft.Image` path, and it does so with `load_default()`.

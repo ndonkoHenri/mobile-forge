@@ -48,36 +48,37 @@ def test_font():
     img = Image.new("RGB", (200, 50), "white")
     ImageDraw.Draw(img).text((10, 10), "Hello", fill="black", font=font)
     pixels = [img.getpixel((x, 25)) for x in range(15, 80)]
-    assert any(
-        p != (255, 255, 255) for p in pixels
-    ), "font didn't render any non-white pixels"
+    assert any(p != (255, 255, 255) for p in pixels), (
+        "font didn't render any non-white pixels"
+    )
 
 
 def test_codec_set_matches_the_readme():
-    """The mobile wheels link libjpeg, libwebp and freetype — no AVIF, JPEG 2000,
-    libtiff or LittleCMS. That is the difference a consumer hits when an
-    Image.open that works on their Mac fails on device, so pin the exact codec
-    set the README promises, both what is in it and what is not."""
+    """JPEG, WebP and FreeType are in; AVIF, JPEG 2000, libtiff and LittleCMS,
+    which the desktop wheel has, are not. WebP and AVIF are modules, so
+    get_supported_codecs() never lists them."""
     from PIL import features
 
     codecs = set(features.get_supported_codecs())
-    assert {"jpg", "zlib", "webp"} <= codecs, codecs
+    assert {"jpg", "zlib"} <= codecs, codecs
     assert not ({"jpg_2000", "libtiff"} & codecs), codecs
+    assert features.check("webp")
+    assert not features.check("avif")
     assert "freetype2" in features.get_supported_modules()
     assert not features.check("littlecms2")
 
 
 def test_default_font_needs_no_file():
-    """There is no system font path on device, so ImageFont.truetype has nothing
-    to open unless the app bundles a face. load_default() carries its own and is
-    the safe fallback — check it renders."""
+    """load_default() carries its own face, so it renders with no font file on
+    the device."""
     from PIL import Image, ImageDraw, ImageFont
 
     image = Image.new("RGB", (120, 40), "white")
     ImageDraw.Draw(image).text(
         (4, 4), "Flet", font=ImageFont.load_default(size=20), fill="black"
     )
-    assert image.getbbox() is not None
+    # getbbox() ignores only black, so on white it can't tell whether a glyph drew.
+    assert image.convert("L").getextrema()[0] < 128
 
 
 def test_webp_available():
