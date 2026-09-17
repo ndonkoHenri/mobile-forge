@@ -1,8 +1,8 @@
-"""Coordinate maths on a device that carries no PROJ database, every answer cross-checked.
+"""Coordinate maths on a device, every answer cross-checked.
 
 No flet in here: each entry point returns finished strings and `main.py` decides how to draw
-them. The PROJ bootstrap lives at the top of this module because it has to run before
-`import pyproj`, and this is the only module that imports it.
+them. The network switch sits at the top of this module because PROJ reads it before
+`import pyproj` returns, and this is the only module that imports it.
 """
 
 import math
@@ -10,16 +10,6 @@ import os
 import time
 from array import array
 
-# PROJ builds no context at all unless some directory holds a file named proj.db, and these
-# wheels ship none — so without this every panel below is a DataDirError. An empty file
-# satisfies pyproj's existence check, which is all it takes to unlock the "+proj=" strings.
-# PROJ itself then rejects the file, which costs one "unable to set PROJ database path"
-# warning per context and leaves EPSG-code lookups to fail. PROJ_DATA has to be set before
-# the import: pyproj resolves the directory once, on its way through pyproj/__init__.py.
-PROJ_DIR = os.path.join(os.getenv("FLET_APP_STORAGE_DATA", "."), "proj")
-os.makedirs(PROJ_DIR, exist_ok=True)
-open(os.path.join(PROJ_DIR, "proj.db"), "ab").close()
-os.environ["PROJ_DATA"] = PROJ_DIR
 # PROJ's libcurl grid fetcher is compiled in and defaults to off. Assigning rather than
 # setdefault is the point: setdefault would leave an inherited PROJ_NETWORK=ON in place and
 # quietly turn an offline app into a downloader.
@@ -205,8 +195,8 @@ def version_line():
 def data_dir_line():
     """The directory PROJ actually resolved, or the error instead of it.
 
-    Guarded because `get_data_dir()` is itself one of the calls that raises DataDirError
-    when nothing was supplied — reporting the failure is the whole point of the row.
+    Guarded because `get_data_dir()` raises DataDirError when no database reached the
+    device — an Android build that does not extract pyproj — and the row should say so.
     """
     try:
         return f"data dir: {pyproj.datadir.get_data_dir()}"
@@ -311,12 +301,11 @@ def axis_rows():
 
 
 def epsg_row():
-    """What the absent database actually costs: authority codes, and nothing else.
+    """An authority code, which needs PROJ's database rather than a projection's parameters.
 
-    Every number above came out of an empty proj.db. This is the one call that cannot, and
-    the error is reported rather than swallowed, so the boundary is legible on the device
-    itself. It prints a CRS name on a desktop, where a database exists, and a CRSError on a
-    phone — which is the whole point of running it there.
+    It resolves wherever the database reached the device: automatically on iOS, and on
+    Android because this app extracts pyproj. Left unguarded in effect — the error is
+    reported rather than swallowed — so a build missing the database is legible on screen.
     """
     try:
         return f"CRS.from_epsg(4326) -> {CRS.from_epsg(4326).name}"

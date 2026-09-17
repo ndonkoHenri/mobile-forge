@@ -6,10 +6,9 @@ into metres on a map, converts one datum into another, and answers distance-and-
 questions on the WGS-84 ellipsoid. On a phone that is what stands between a GPS fix and a
 coordinate anyone else can use — plotting a track on a national grid, showing metres rather
 than degrees, or consuming survey data published in a projection your device knows nothing
-about. It computes all of that in-process, with no network. These wheels ship no `proj.db`,
-which splits the library in half on device: the geodesic API works out of the box, and
-everything touching a coordinate reference system raises until your app supplies a data
-directory — one line of code and, for a large class of apps, zero bytes of payload.
+about. It computes all of that in-process, with no network. PROJ's database, `proj.db`, ships
+with these wheels, so EPSG codes resolve on iOS with no configuration and on Android once the
+app extracts pyproj — the one line under **Install**.
 
 ## Install
 
@@ -19,7 +18,16 @@ dependencies = [
     "flet",
     "pyproj",
 ]
+
+[tool.flet.android]
+extract_packages = ["pyproj"]   # without this the database stays in the zip
 ```
+
+On Android the database travels inside pyproj, and a file inside Flet's `sitepackages.zip` is
+not a path PROJ can open, so the package has to be extracted to disk. `extract_packages` is
+read from **your** pyproject and is never inherited from a dependency, so nothing sets it on
+your behalf. Miss it and `import pyproj` still succeeds, then every `CRS` and `Transformer`
+call raises `DataDirError` — proj-strings included. iOS ignores the table.
 
 pyproj needs **Python 3.11 or newer**, so set the app's `requires-python` to at least
 `>=3.11`. Leaving it at the `>=3.10` that `flet create` writes does not fail the resolve —
@@ -32,47 +40,51 @@ low split.
 
 See runnable Flet apps in [`examples/`](examples):
 
-- [`control-points`](examples/control-points) — coordinate maths that prints its own residuals,
-  running off an empty `proj.db`.
+- [`control-points`](examples/control-points) — geodesics, proj-string projections and an EPSG
+  lookup, each printing its own residual.
 
 ## Usage in a Flet app
 
-Point PROJ at a directory holding a file called `proj.db` before the import, then build a
-transformer and put its result on screen:
+Build a transformer once and put its result on screen:
 
 ```python
-import os
-
-proj_dir = os.path.join(os.getenv("FLET_APP_STORAGE_DATA", "."), "proj")
-os.makedirs(proj_dir, exist_ok=True)
-open(os.path.join(proj_dir, "proj.db"), "ab").close()  # an empty stub is enough
-os.environ["PROJ_DATA"] = proj_dir                     # before `import pyproj`
-
 import flet as ft
 import pyproj
 
-WGS84 = "+proj=longlat +datum=WGS84 +no_defs"
-WEB_MERCATOR = "+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +units=m +no_defs"
-
 # always_xy=True, and feed it (lon, lat) — see Things to know
-to_metres = pyproj.Transformer.from_crs(WGS84, WEB_MERCATOR, always_xy=True)
-x, y = to_metres.transform(2.3522, 48.8566)
+to_utm = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:32633", always_xy=True)
+easting, northing = to_utm.transform(15.0, 60.0)
 
-position = ft.Text(f"{x:,.1f} m E   {y:,.1f} m N")
+position = ft.Text(f"{easting:,.1f} m E   {northing:,.1f} m N")
 ```
 
 ### The PROJ database
 
-**Neither these wheels nor `flet-libproj` contain `proj.db`, or any file under `share/proj`, on
-either platform.** PROJ refuses to build a *context* until it finds a directory holding a file
-of that name, and every
+PROJ refuses to build a *context* until it finds a directory holding a file called `proj.db`,
+and every
 [`CRS`](https://pyproj4.github.io/pyproj/stable/api/crs/crs.html#pyproj.crs.CRS),
 [`Proj`](https://pyproj4.github.io/pyproj/stable/api/proj.html#pyproj.Proj),
 [`Transformer`](https://pyproj4.github.io/pyproj/stable/api/transformer.html#pyproj.transformer.Transformer),
-`database` and `network` call goes through one. So `import pyproj` succeeds — emitting
-`UserWarning: Valid PROJ data directory not found…` — and
-[`Geod`](https://pyproj4.github.io/pyproj/stable/api/geod.html#pyproj.Geod) works in full with
-no data directory at all (Paris → London measured 343,915.771 m), while everything else raises
+`database` and `network` call goes through one.
+[`Geod`](https://pyproj4.github.io/pyproj/stable/api/geod.html#pyproj.Geod) does not, and works
+with no data directory at all (Paris → London measured 343,915.771 m). The database reaches
+that directory differently on each platform:
+
+- **iOS:** `flet-libproj` ships it in `opt/share/proj`, a real directory inside the app, and
+  `pyproj/__init__.py` sets `PROJ_DATA` and `PROJ_LIB` to it before the first extension
+  import — unless either is already set.
+- **Android:** that `opt/` tree never reaches site-packages, so the database ships inside
+  pyproj itself, at `pyproj/proj_dir/share/proj/proj.db`. pyproj looks there before
+  `PROJ_DATA`, so once **Install**'s `extract_packages` has put it on disk it is found with
+  no code.
+
+The same shared PROJ is what [`gdal`](../gdal), [`fiona`](../fiona), [`rasterio`](../rasterio)
+and [`pyogrio`](../pyogrio) link, so one database serves the whole app. On Android those
+packages find pyproj's extracted copy without importing pyproj, which is why an app using them
+there needs pyproj installed and extracted to resolve EPSG codes.
+
+**With no database on disk** — Android without extraction — `import pyproj` still succeeds,
+emitting `UserWarning: Valid PROJ data directory not found…`, and everything but `Geod` raises
 [`pyproj.exceptions.DataDirError`](https://pyproj4.github.io/pyproj/stable/api/exceptions.html#pyproj.exceptions.DataDirError):
 `CRS.from_epsg`, `CRS("EPSG:3857")`, `CRS("+proj=utm …")`, `Proj`, `Transformer.from_crs`,
 `Transformer.from_pipeline`, `database.get_authorities()`, `datadir.get_data_dir()`,
@@ -80,81 +92,76 @@ no data directory at all (Paris → London measured 343,915.771 m), while everyt
 call rather than at import — typically inside an event handler, where an unhandled exception
 ends the session with a crash screen.
 
-Two ways to supply a directory, both verified in the main thread and in worker threads, which
-build their own PROJ context:
+**Proj-strings and WKT need no database content.** They name a projection by its parameters,
+so wherever pyproj has a data directory they behave identically on both platforms, and they are
+the portable choice for code that must run on both. The accuracy cost is nil, because a
+proj-string reproduces the authority definition exactly: `+proj=merc` against EPSG:3857 at Paris, `+proj=utm +zone=33` against
+EPSG:32633 at 15°E 60°N and `+proj=tmerc …` against EPSG:27700 at London each agreed **bit for
+bit** with the same transform run against the full database. What you give up is discovery —
+you have to know the parameters, and `CRS(code).name`, `.area_of_use` and the `database` module
+are closed to you. The [`control-points`](examples/control-points) example projects this way
+and keeps authority codes to a single row.
+
+**An empty `proj.db` is only for an Android app that skips extraction** — one that uses
+proj-strings alone and does not want the database extracted to disk. `get_data_dir()` checks
+only that a file of that name exists, so a zero-byte one clears `DataDirError` for the
+proj-string API, at a cost of one `UserWarning: pyproj unable to set PROJ database path.` per
+context; authority codes then raise `CRSError: … no database context specified`. Plant it only
+when no database was found:
 
 ```python
-os.environ["PROJ_DATA"] = data_dir       # before `import pyproj`
-pyproj.datadir.set_data_dir(data_dir)    # any time after it
+import os
+
+import pyproj
+from pyproj.exceptions import DataDirError
+
+try:
+    pyproj.datadir.get_data_dir()
+except DataDirError:  # Android without extract_packages
+    stub = os.path.join(os.getenv("FLET_APP_STORAGE_DATA", "."), "proj")
+    os.makedirs(stub, exist_ok=True)
+    open(os.path.join(stub, "proj.db"), "ab").close()
+    pyproj.datadir.set_data_dir(stub)
 ```
 
-The environment variable has to be set before the import because pyproj resolves the directory
-once, on its way through `pyproj/__init__.py`; setting it there also means the lookup succeeds
-first time and no warning is emitted.
-[`append_data_dir`](https://pyproj4.github.io/pyproj/stable/api/datadir.html#pyproj.datadir.append_data_dir)
-adds a second directory without displacing the first, which is how you add grid files: PROJ
-takes the *database* from the first entry and treats the rest as search paths.
+Setting `PROJ_DATA` to a stub unconditionally instead would displace the real database on iOS,
+where the shim leaves an existing value alone.
 
-**Zero bytes: an empty `proj.db`.** `get_data_dir()` checks nothing but that a file of that
-name **exists**, and a zero-byte file passes. That unlocks the whole PROJ-string API —
-`Proj(proj="utm", zone=33, ellps="WGS84")`, `CRS("+proj=…")` and `.to_proj4()`,
-`Transformer.from_crs(<proj-string>, <proj-string>)`, `Transformer.from_pipeline(...)`, `Geod`
-and `network.is_network_enabled()` — at a cost of one
-`UserWarning: pyproj unable to set PROJ database path.` per context built. Anything naming an
-authority still fails: `CRS.from_epsg(4326)` and
-`Transformer.from_crs("EPSG:4326", "EPSG:3857")` raise `CRSError: Invalid projection:
-EPSG:4326: (Internal Proj Error: proj_create: no database context specified)`. The accuracy
-cost is nil, because a proj-string reproduces the authority definition exactly: `+proj=merc`
-against EPSG:3857 at Paris, `+proj=utm +zone=33` against EPSG:32633 at 15°E 60°N and
-`+proj=tmerc …` against EPSG:27700 at London each agreed **bit for bit** with the same
-transform run against the full database. What you give up is discovery — you have to know the
-parameters, and `CRS(code).name`, `.area_of_use` and the `database` module are closed to you.
-The [`control-points`](examples/control-points) example runs entirely this way.
-
-**Nine megabytes: the real database.** If you need EPSG codes, ship `proj.db` as an asset and
-point
-[`set_data_dir`](https://pyproj4.github.io/pyproj/stable/api/datadir.html#pyproj.datadir.set_data_dir)
-at the directory holding it:
+**Your own database — a newer PROJ data release — or datum grids** ship as an asset. Point
+both mechanisms at the directory holding them:
 
 ```python
 proj_dir = os.path.join(os.getenv("FLET_ASSETS_DIR", "assets"), "proj")
-os.environ["PROJ_DATA"] = proj_dir        # before `import pyproj`; reaches every copy
+os.environ["PROJ_DATA"] = proj_dir        # before `import pyproj`; the GDAL packages read it
 pyproj.datadir.set_data_dir(proj_dir)     # after it
 ```
 
-Either mechanism works, on both platforms: all ten extensions link one shared PROJ, so
-`set_data_dir` and `PROJ_DATA` configure the same instance. Setting the variable *as well* is
-still worth doing, because it is the only one that applies before `import pyproj` — PROJ reads
-it when a context is first created, and anything that resolves a CRS during import has already
-gone past `set_data_dir`.
+`set_data_dir` is the one that matters for pyproj on Android:
+[`get_data_dir`](https://pyproj4.github.io/pyproj/stable/api/datadir.html#pyproj.datadir.get_data_dir)
+prefers it, then pyproj's own `proj_dir`, and only then `PROJ_DATA`, so the extracted copy
+outranks the variable. The variable is still worth setting, because it is the only one that
+applies before any import — PROJ reads it when a context is first created — and the GDAL
+packages' shims leave a value you set alone. Both mechanisms were verified in the main thread
+and in worker threads, which build their own PROJ context.
+[`append_data_dir`](https://pyproj4.github.io/pyproj/stable/api/datadir.html#pyproj.datadir.append_data_dir)
+adds a directory without displacing the first, which is how you add grid files and keep the
+shipped database: PROJ takes the *database* from the first entry and treats the rest as search
+paths.
 
-The same shared PROJ is what [`gdal`](../gdal), [`fiona`](../fiona), [`rasterio`](../rasterio)
-and [`pyogrio`](../pyogrio) link, so a database configured for pyproj is configured for them
-too — one `proj.db` for the whole app rather than one per package.
-
-Take it from the same-version PyPI wheel, whose macOS arm64 build carries
-`pyproj/proj_dir/share/proj` as 16 files totalling about 9.4 MB. **`proj.db` on its own — about
-9.3 MB — is sufficient**: the other fifteen are init files, JSON schemas and `proj.ini`, and
-the database is the only one `get_data_dir()` looks for. Copied alone into an empty directory
-it resolved `CRS("EPSG:27700").name` to `OSGB36 / British National Grid`, ran
-`EPSG:4326 → EPSG:3857` and `EPSG:4326 → EPSG:27700`, and worked from a worker thread.
-
-**The version skew is real and harmless.** PROJ validates the database's
+**A database from another PROJ release has to match its layout version.** PROJ validates
 `DATABASE.LAYOUT.VERSION.MAJOR`/`MINOR` and rejects a mismatch with *"It comes from another
-PROJ installation"*. That database declares layout 1.4 and `PROJ.VERSION 9.5.1`, while
-`flet-libproj` is PROJ **9.5.0** — but 9.5.0 wants layout 1.4 as well, and a PROJ 9.5.0 built
-from the same tarball the recipe fetches accepted that exact file. Nothing in CI exercises it,
-so confirm it on the device you ship.
+PROJ installation"*. The database in the same-version PyPI wheel declares layout 1.4 and
+`PROJ.VERSION 9.5.1`, and PROJ 9.5.0, which `flet-libproj` builds, wants layout 1.4 as well and
+accepted that exact file. Confirm any other database on the device you ship.
 
 ### Storage
 
-The empty stub is app-private state rather than an asset, which is why the snippet above
-creates it under
+The shipped database needs no storage decision. An empty stub is app-private state rather than
+an asset, which is why the snippet above creates it under
 [`FLET_APP_STORAGE_DATA`](https://flet.dev/docs/reference/environment-variables/#flet_app_storage_data)
-— durable, and a real filesystem path on both platforms, at a cost of one `os.makedirs` and one
-`open(path, "ab").close()`.
+— durable, and a real filesystem path on both platforms.
 
-A real `proj.db`, and any grid file, ships with the application instead: put it in the
+A database of your own, and any grid file, ships with the application instead: put it in the
 [assets directory](https://flet.dev/docs/cookbook/assets) and read
 [`FLET_ASSETS_DIR`](https://flet.dev/docs/reference/environment-variables/#flet_assets_dir) for
 the absolute path to hand `set_data_dir` or `append_data_dir`. Keep a 9 MB database out of app
@@ -163,8 +170,8 @@ keep current.
 
 ### Grids and the network
 
-No transformation grid ships either, and most transforms do not need one. Where one *is*
-wanted — datum shifts like OSTN15 for the British National Grid, or NADCON for NAD27 — PROJ
+No transformation grid ships beside the database, and most transforms do not need one. Where
+one *is* wanted — datum shifts like OSTN15 for the British National Grid, or NADCON for NAD27 — PROJ
 silently falls back to a lower-accuracy operation instead of failing, which is the trap under
 [Things to know](#things-to-know). Bundle the grid as an asset and `append_data_dir` its
 directory, or use one of the two independent download paths, **both of which are off unless you
@@ -221,67 +228,70 @@ and auto-update does not reach background threads, so end the handler with an ex
 
 ### App size
 
-Everything in the wheel except the extensions is about 545 KB on every slice. The extensions
-are the whole story, and iOS carries about seventy times what Android does:
+Everything in the wheel except the extensions is about 545 KB on every slice. On Android:
 
 | slice | wheel | unpacked | the ten extensions |
 | --- | --- | --- | --- |
 | Android arm64-v8a | 0.49 MB | 1.6 MB | 1.04 MB |
 | Android armeabi-v7a | 0.46 MB | 1.3 MB | 0.72 MB |
 | Android x86_64 | 0.52 MB | 1.6 MB | 1.02 MB |
-| iOS arm64 (device) | 28.5 MB | 75.9 MB | 75.3 MB |
-| iOS arm64 (simulator) | 29.2 MB | 76.2 MB | 75.7 MB |
-| iOS x86_64 (simulator) | 30.9 MB | 79.4 MB | 78.9 MB |
+
+On iOS the extensions link the shared `libproj.dylib` rather than carrying PROJ, and the wheels
+are 0.55–0.58 MB.
 
 Those are decimal MB; `du -h` and the Finder report binary units and read about 5% lower for
-the same bytes.
+the same bytes. The Android table excludes `proj.db`, which only the Android wheel carries: it is
+9.26 MB unpacked and brings that wheel to about 2.3 MB. Extracting pyproj adds
+`assets/extract.zip`, about 9.6 MB, to the APK.
 
 Both platforms load PROJ from a separate shared library on top of that — on Android a chain of
 about 7.5 MB on arm64-v8a, 5.2 MB on armeabi-v7a and 8.3 MB on x86_64; on iOS a single
-`libproj.dylib`, 3.6–3.9 MB compressed and 9.9–10.4 MB unpacked, which absorbs libtiff,
-libjpeg, libcurl, libpsl and OpenSSL rather than chaining to them. So on Android, use an app bundle, split APKs, or
+`libproj.dylib`, 9.9–10.4 MB unpacked, which absorbs libtiff, libjpeg, libcurl, libpsl and
+OpenSSL rather than chaining to them, shipped beside the 9.26 MB `proj.db` in a `flet-libproj`
+wheel of about 5.4 MB per slice. So on Android, use an app bundle, split APKs, or
 narrow [`target_arch`](https://flet.dev/docs/publish/android/#supported-target-architectures)
 when the app does not need every ABI; that lever is worth more here than the wheel column
 suggests, since the native chain is carried once per ABI. On iOS the same shared
 `libproj.dylib` serves every GDAL consumer in the app as well, so a project using pyproj
-beside [`rasterio`](../rasterio) or [`fiona`](../fiona) pays for PROJ once;
+beside [`rasterio`](../rasterio) or [`fiona`](../fiona) pays for PROJ and its database once;
 [`[tool.flet.cleanup]`](https://flet.dev/docs/publish/#compilation-and-cleanup) cannot reach
-it. Budget for it, and add whatever database you decide to ship. These figures describe the
-package payload, not the exact amount added to the final APK or IPA; packaging and compression
-determine that.
+it. Budget for it. These figures describe the package payload, not the exact amount added to
+the final APK or IPA; packaging and compression determine that.
 
 ### Other considerations
 
-**Your desktop is not a preview of the device.** `flet run` resolves pyproj from PyPI, whose
-wheel *does* bundle `proj_dir/share/proj/proj.db` — and that internal directory takes
-precedence over `PROJ_DATA`, so EPSG codes work on your Mac and raise on the phone from the
-same code. Test the CRS half on a device or simulator, or temporarily move
-`site-packages/pyproj/proj_dir` aside to reproduce the device shape locally.
+**Your desktop cannot show you a missing `extract_packages`.** `flet run` resolves pyproj from
+PyPI, whose wheel bundles `proj_dir/share/proj/proj.db`, so EPSG codes work on your Mac whatever
+your pyproject says, and raise on an Android phone when the table is missing. Test the CRS half
+on an Android device or emulator, or temporarily move `site-packages/pyproj/proj_dir` aside to
+reproduce an unextracted install locally — with no system PROJ on `PATH`, which `get_data_dir`
+also searches.
 
 ## Things to know
 
-- **`import pyproj` succeeding proves nothing.** It succeeds when no data directory exists,
-  with only a `UserWarning` to show for it, and nothing in your UI displays that. The failure
-  surfaces at the first `CRS`/`Transformer` call, which is typically inside an event handler,
-  where an unhandled exception gives you a crash screen rather than a message. Set the data
-  directory at startup and wrap the first transform in `try/except Exception`.
+- **`import pyproj` succeeding proves nothing.** On Android without `extract_packages` it
+  succeeds with no data directory, with only a `UserWarning` to show for it, and nothing in your
+  UI displays that. The failure surfaces at the first `CRS`/`Transformer` call, which is
+  typically inside an event handler, where an unhandled exception gives you a crash screen
+  rather than a message. Declare the table and wrap the first transform in
+  `try/except Exception`.
 - **[`pyproj.show_versions()`](https://pyproj4.github.io/pyproj/stable/api/show_versions.html#pyproj.show_versions)
-  raises on device.** It prints `pyproj info:` and then reaches for the database. Build a
-  header line from `pyproj.__version__`, `pyproj.__proj_version__`,
-  `pyproj.__proj_compiled_version__` and `pyproj.geod.geodesic_version_str` — all of which work
+  raises without a data directory** — Android without `extract_packages`. It prints
+  `pyproj info:` and then reaches for the database. For a header line that survives that, use
+  `pyproj.__version__`, `pyproj.__proj_version__`, `pyproj.__proj_compiled_version__` and `pyproj.geod.geodesic_version_str` — all of which work
   with no data at all — plus `datadir.get_data_dir()` and `network.is_network_enabled()` in
   their own `try/except`.
 - **`always_xy=True` on every `Transformer.from_crs`, and feed it `(lon, lat)`.** EPSG:4326's
   authority axis order is latitude-first
   ([`CRS("EPSG:4326").axis_info`](https://pyproj4.github.io/pyproj/stable/api/crs/crs.html#pyproj.crs.CRS.axis_info)
-  → `[('Lat','north'), ('Lon','east')]`), so a default transformer reads your `(2.3522,
+  → `[('Lat','north'), ('Lon','east')]`), so a default transformer reads Paris's `(2.3522,
   48.8566)` as latitude 2.35. It does not raise — to EPSG:3857 it returns
   `(5438691.83, 261919.29)`, a perfectly well-formed Web Mercator pair that is simply wrong.
   `+proj=longlat` strings are longitude-first and unaffected, which is exactly why testing
   against one proves nothing about the EPSG path.
 - **A missing grid downgrades the transform silently — this is the one that will hurt you.**
-  With the full database present and no grid files (which is every device that ships `proj.db`
-  and nothing else), `Transformer.from_crs("EPSG:4326", "EPSG:27700")` and the transform that
+  With the full database present and no grid files (which is every device: the database ships,
+  grids do not), `Transformer.from_crs("EPSG:4326", "EPSG:27700")` and the transform that
   follows raise **zero warnings** and return coordinates that look completely normal. PROJ has
   quietly picked *"Inverse of OSGB36 to WGS 84 (6)"*, declared accuracy **2.0 m**, in place of
   the *"(9)"* operation it wanted at **1.0 m**, which needs `uk_os_OSTN15_NTv2_OSGBtoETRS.tif`
@@ -330,25 +340,27 @@ same code. Test the CRS half on a device or simulator, or temporarily move
 
 ### Recipe shape
 
-Two recipes: `flet-libproj` builds PROJ, `recipes/pyproj` consumes it. `patches/mobile.patch`
-explains both of its hunks in its own preamble and `meta.yaml` comments its `script_env` next
-to it, so what is left here is shape, the linkage evidence the consumer sections rest on, and
+Two recipes: `flet-libproj` builds PROJ, `recipes/pyproj` consumes it. The three patches explain
+themselves in their preambles and `meta.yaml` comments its `script_env` next to it, so what is
+left here is shape, the linkage evidence the consumer sections rest on, and
 the bump checklist.
 
-**The missing `share/proj` is a `flet-libproj` decision, not a pyproj one.** PROJ's
-`make install` writes the whole tree, and `recipes/flet-libproj/build.sh` ends with
-`rm -rf $PREFIX/{bin,share}`, which deletes it. That is defensible — 9 MB in a library wheel
-that most consumers of PROJ-the-C-library do not want, and pyproj expects it at
-`pyproj/proj_dir/share/proj` rather than in `opt/` anyway — but it is why **The PROJ database**
-is the longest section above. Changing it means deciding *which* wheel carries the database and
-how it reaches `get_data_dir()`; do not "fix" the `rm` in isolation and expect pyproj to find
-the result.
+**The database lives in a different wheel on each platform, because only iOS can reach
+`opt/`.** `flet-libproj` keeps `opt/share/proj/proj.db` and deletes the rest of `share/`. On iOS
+that tree is a real directory in the app, so `ios-libproj-preload.patch` sets `PROJ_DATA` and
+`PROJ_LIB` to it. On Android the tree never reaches site-packages — an APK's
+`sitepackages.zip` has no `opt/` entries, and `copyOpt` lifts only `*.so` into `jniLibs` — so no
+`extract_packages` entry can put it on disk. It has to live in a real Python package, and
+pyproj's own `PROJ_WHEEL` switch is that route: `stage-proj-db.patch` copies the database from
+`PROJ_DIR` into `pyproj/proj_dir` so `get_package_data` has something to package. `PROJ_WHEEL`
+is Android-only because iOS already has the file in `flet-libproj`, and a second copy would
+add 9 MB for nothing. pyproj is also the carrier for the GDAL consumers on Android, whose shims
+look for `pyproj/proj_dir/share/proj` through `find_spec`, so moving the database means
+changing all five shims together.
 
-**`flet-libproj` is `requirements.host`, so it lands in `Requires-Dist` on both platforms.**
-Right on Android, where `libproj.so` must reach `jniLibs`; redundant on iOS, where the static
-archive has already been absorbed. One recipe has to satisfy both. On iOS `flet-libproj` and
-the extra `flet-libjpeg` ship nothing but `.a` archives and headers, and serious_python's
-cleanup deletes every `**.a` and `**.h`, so the installed wheels end up empty.
+**`flet-libproj` is `requirements.host`, so it lands in `Requires-Dist` on both platforms**,
+and both need it at runtime: on Android `libproj.so` must reach `jniLibs`, and on iOS the wheel
+carries `libproj.dylib` and `opt/share/proj/proj.db`.
 
 **Android: a chain of shared libraries, resolved by bare soname.** All ten extensions list
 exactly `libm.so`, `libproj.so`, `libpython3.<minor>.so`, `libdl.so` and `libc.so` in
@@ -380,16 +392,17 @@ SQLite differs across the platforms — Android's `libproj.so` links `libsqlite3
 Flet's Python bundle, iOS binds the system `/usr/lib/libsqlite3.dylib` — and either way it is
 that SQLite which opens whatever `proj.db` the app supplies.
 
-**No `extract_packages` entry and no loader shim.** All 65 entries in the wheel are ten
-extensions, 20 `.py` files, Cython sources and stubs, and `dist-info` — no data file of any
-kind — and across the whole package there is exactly one occurrence of `__file__`,
-`importlib.resources`, `pkgutil`, `pkg_resources`, `ctypes`, `find_library`, `sys.platform`,
-`platform.system()` or `os.name`: `datadir.py:73`, which probes for a bundled data directory
-that is not there and is *meant* to fail. All ten extension filenames carry a full CPython ABI
-tag, which is what Android's relocation needs. Nothing reads its own source, so `.pyc`
-compilation is safe; Flet's default cleanup takes 26 files and 202,508 bytes of `.pyx`, `.pxd`,
-`.pyi` and `py.typed`, and leaves two unused `.pxi` at 23,144 bytes. `certifi` is pure Python
-and absent from this index, so it resolves from PyPI.
+**`meta.yaml`'s `extract_packages` reaches the recipe's own on-device tests only.** The
+recipe-tester passes it to `flet build`; a consumer's build never reads it, which is why
+**Install** asks the app to declare it. Beyond `proj.db` in the Android wheel, the wheel ships
+no data file, and outside the preload shim in `__init__.py` there is exactly one occurrence of
+`__file__`, `importlib.resources`, `pkgutil`, `pkg_resources`, `ctypes`, `find_library`,
+`sys.platform`, `platform.system()` or `os.name`: `datadir.py:73`, the probe for
+`proj_dir/share/proj` that finds the extracted Android database. All ten extension filenames
+carry a full CPython ABI tag, which is what Android's relocation needs. Nothing reads its own
+source, so `.pyc` compilation is safe; Flet's default cleanup takes 26 files and 202,508 bytes
+of `.pyx`, `.pxd`, `.pyi` and `py.typed`, and leaves two unused `.pxi` at 23,144 bytes.
+`certifi` is pure Python and absent from this index, so it resolves from PyPI.
 
 Nineteen wheels come out of one build number: Python 3.12, 3.13 and 3.14 × three Android ABIs
 and three iOS slices, plus a legacy 32-bit `android_24_x86` slice on 3.12, which flet-cli
@@ -398,7 +411,13 @@ and three iOS slices, plus a legacy 32-bit `android_24_x86` slice on 3.12, which
 
 ### Upgrade hazards
 
-- **The empty-`proj.db` trick lives in pyproj's Python layer, not in PROJ**, so a `flet-libproj`
+- **Both halves of the database route fail silently.** `flet-libproj`'s `build.sh` keeps
+  `proj.db` only if `make install` wrote it, and `stage-proj-db.patch` returns quietly when
+  `PROJ_WHEEL`, `PROJ_DIR` or the source file is missing, or when `proj_dir` already exists. A
+  PROJ bump that moves the file, or a pyproj bump that renames `INTERNAL_PROJ_DIR` or reworks
+  `get_package_data`, still builds green and ships no database. The checklist below is what
+  catches it.
+- **The empty-`proj.db` stub lives in pyproj's Python layer, not in PROJ**, so a `flet-libproj`
   bump cannot break it on its own. The file only has to satisfy `datadir.py`'s
   `Path(dir, "proj.db").exists()`. PROJ then *rejects* it — `proj_context_set_database_path`
   returns false and `_context.pyx` warns *"pyproj unable to set PROJ database path"*, which is
@@ -410,8 +429,6 @@ and three iOS slices, plus a legacy 32-bit `android_24_x86` slice on 3.12, which
   0.55–4.27 m it costs across Great Britain — the inertness of `allow_ballpark`/`only_best`, and
   the `+towgs84` round-trip residual. They are the most consumer-visible claims here and nothing
   asserts them.
-- **If iOS ever links PROJ dynamically instead of absorbing it**, the size table, the **App
-  size** "no lever" statement and the `Requires-Dist` reasoning all change together.
 
 ### Re-verification checklist
 
@@ -427,46 +444,48 @@ and three iOS slices, plus a legacy 32-bit `android_24_x86` slice on 3.12, which
   accuracy sentence in Usage no longer holds.
 
 - **The PROJ version** comes from `flet-libproj`'s `libproj.so` / `libproj.dylib` on both
-  platforms now, so `strings` on that one file answers it. The version belongs on the
+  platforms, so `strings` on that one file answers it. The version belongs on the
   example's header line, not in an assertion.
 - **That PROJ is still SHARED on both platforms, first.** Android: `DT_NEEDED` still naming
   `libproj.so` with no `libc++_shared`, `SONAME libproj.so`, the
   `libtiff`/`libcurl`/`libjpeg`/`libpsl` chain intact, and 16 KB `PT_LOAD` alignment on all ten
   extensions and on `libproj.so`. iOS: ten `MH_DYLIB`s each naming `@rpath/libproj.dylib`, and
   `nm -a <ext> | grep " [tT] _proj_create"` EMPTY for every one. A definition there means the
-  link absorbed a static PROJ again, which puts a private database search path back in each
-  extension and makes `set_data_dir` configure one of them. The wheel size is the cheap tell:
+  link absorbed a static PROJ, which gives each extension a private database search path and
+  makes `set_data_dir` configure one of them. The wheel size is the cheap tell:
   it should stay well under a megabyte.
 - **A device run of the [`control-points`](examples/control-points) example.** If a pyproj bump
   tightened the data-directory check, every panel becomes a `DataDirError` row — visibly rather
   than silently.
-- **The database version skew**, on the device you ship: nothing in CI loads a real `proj.db`
-  against the shipped PROJ, and the layout-version gate is what would reject it.
+- **The database is present where each platform reads it.** `unzip -l` every `flet-libproj`
+  wheel for `opt/share/proj/proj.db` (9,261,056 bytes at PROJ 9.5.0; about 5.4 MB of iOS
+  wheel), and every Android pyproj wheel for `pyproj/proj_dir/share/proj/proj.db` (about
+  2.3 MB of wheel), which the build log announces as `mobile-forge: staged …`. The iOS pyproj
+  wheels should carry none.
+- **The Android extraction tell.** In an APK built with `extract_packages = ["pyproj"]`,
+  `assets/extract.zip` is about 9.6 MB; 22 bytes means nothing was extracted and EPSG codes will
+  raise.
 - **The sizes and timings are measured.** Re-measure rather than adjusting by eye, and quote
-  decimal; the iOS totals in particular are the whole argument for budgeting 75 MB.
+  decimal.
 
 ### Coverage gaps
 
-`tests/test_pyproj.py` covers `import pyproj` and two `Geod` calls, and nothing else. The whole
-`CRS`/`Transformer` surface — the half this page spends most of its words on — is untested on
-device, and it is untested precisely because it depends on data the wheel does not ship. A green
-CI run is evidence about linking and geodesy, and nothing more. Worth adding: a test that plants
-a directory containing an empty `proj.db`, calls `set_data_dir`, and asserts that a `+proj=utm`
-transform returns the expected numbers while `CRS.from_epsg(4326)` raises `CRSError`. That pins
-the exact boundary this page documents, needs no payload, and would turn a change in the stub's
-behaviour red instead of silent.
+`tests/test_pyproj.py` covers `import pyproj`, two `Geod` calls, and
+`test_epsg_codes_resolve_where_proj_db_reached_the_device`. That test decides from the shipped
+file, not from PROJ, whether a database is present; with one, it requires `CRS.from_epsg(4326)`
+and an `EPSG:4326 → EPSG:32633` transform landing on the 500000.0 easting at 15°E, 60°N, after
+a proj-string control; without one it requires `CRS.from_epsg(4326)` to raise `CRSError` or
+`DataDirError`, and runs no control, because pyproj needs a data directory for any transform.
+The database branch has passed on an iOS simulator and on an Android emulator.
 
-The grid-downgrade figures are the other gap: they were measured on a desktop PROJ 9.5.1 with a
-downloaded grid, and no device has run them, because neither the wheel nor the example ships
-`proj.db` or a grid file.
+Not covered on a device:
 
-**Which copies `set_data_dir` reaches on iOS is a third**, and the one to settle first if
-anyone ships a real database. Eight extensions carry their own PROJ, read from the published
-iOS wheel — `nm -a` finds 126 local `proj_*` text symbols and a `"proj.db"` string in each of
-`_transformer`, `_context` and `database` alone — so an API call cannot be assumed to configure
-the copy that runs a transform. A desktop cannot answer it: pyproj's bundled `proj_dir` wins
-over both mechanisms there, and `set_data_dir` against an empty stub only warns *pyproj unable
-to set PROJ database path* and then resolves EPSG codes from the bundled database anyway. The
-device test that would answer it plants an empty `proj.db`, calls `set_data_dir` **without**
-setting `PROJ_DATA`, and reads which error a `CRS.from_epsg` raises — PROJ's own *Cannot find
-proj.db* means the call never reached that copy, while a SQLite *no such table* means it did.
+- **The Android no-extraction shape and the empty stub.** The recipe-tester always extracts
+  pyproj, so the test's no-database branch has not run on a device, and the `DataDirError` list
+  and the stub's boundary are desktop measurements.
+- **A database or grid supplied as an asset**, including the layout-version acceptance of a
+  database from another PROJ release.
+- **Grids.** The grid-downgrade figures were measured on a desktop PROJ 9.5.1 with a
+  downloaded grid; no device has run them, because no grid file ships.
+- **The network**: PROJ's fetcher, `download_grids` and the offline probe.
+- **Threading and timings**, and the three "bit for bit" control points.

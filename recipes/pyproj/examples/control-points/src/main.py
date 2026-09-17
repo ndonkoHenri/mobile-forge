@@ -56,7 +56,7 @@ def main(page: ft.Page):
                     heading("Geodesics on the ellipsoid (no data needed)"),
                     *(line(row) for row in coordinates.geodesy_rows()),
                     ft.Divider(),
-                    heading("Projections from proj-strings (empty proj.db)"),
+                    heading("Projections from proj-strings"),
                     *(line(row) for row in coordinates.projection_rows()),
                     ft.Divider(),
                     heading("Axis order"),
