@@ -127,8 +127,9 @@ def test_epsg_codes_work_where_proj_db_reached_the_device():
     wgs84 = "+proj=longlat +datum=WGS84 +no_defs"
     mercator = "+proj=merc +a=6378137 +b=6378137 +lon_0=0 +units=m +no_defs"
     xs, ys = transform(wgs84, mercator, [4.3517], [50.8503])
-    assert 484_000 < xs[0] < 485_000, xs
-    assert 6_593_000 < ys[0] < 6_596_000, ys
+    # Closed form: x = a*lon, y = a*ln(tan(pi/4 + lat/2)), radians, a = 6378137.
+    assert abs(xs[0] - 484429.03) < 0.01, xs
+    assert abs(ys[0] - 6594856.12) < 0.01, ys
 
     package = os.path.dirname(os.path.abspath(rasterio.__file__))
     env_var = next((v for v in ("PROJ_DATA", "PROJ_LIB") if os.environ.get(v)), None)

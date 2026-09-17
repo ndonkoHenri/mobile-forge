@@ -58,8 +58,9 @@ def test_epsg_codes_work_where_proj_db_reached_the_device():
             )
         )
         x, y, _ = osr.CoordinateTransformation(wgs84, mercator).TransformPoint(4.3517, 50.8503)
-        assert abs(x - 484409.0) < 5000, x
-        assert abs(y - 6593200.0) < 5000, y
+        # Closed form, in radians: x = a*lon, y = a*ln(tan(pi/4 + lat/2)), a = 6378137.
+        assert abs(x - 484429.03) < 0.01, x
+        assert abs(y - 6594856.12) < 0.01, y
 
         # osgeo/osr.py -> osgeo -> site-packages.
         site_packages = os.path.dirname(os.path.dirname(os.path.abspath(osr.__file__)))

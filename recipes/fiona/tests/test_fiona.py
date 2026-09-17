@@ -62,8 +62,8 @@ def test_transform_loads_and_reprojects():
     `fiona/_transform.so` is the only extension of the eight whose `DT_NEEDED`
     names it, and plain `import fiona` never loads that module — so a wheel
     missing `flet-libcpp-shared` from its `Requires-Dist` installs cleanly,
-    passes every other test here, and fails only when an app reaches for a
-    reprojection.
+    passes every test that never imports `fiona.transform`, and fails only when
+    an app reaches for a reprojection.
 
     The CRSs are spelled as proj-strings rather than EPSG codes deliberately.
     Where `proj.db` has not reached the device, anything naming an authority
@@ -109,7 +109,10 @@ def test_epsg_codes_work_where_proj_db_reached_the_device():
 
     wgs84 = "+proj=longlat +datum=WGS84 +no_defs"
     mercator = "+proj=merc +a=6378137 +b=6378137 +lon_0=0 +units=m +no_defs"
-    assert transform(wgs84, mercator, [4.3517], [50.8503])[0]
+    # Spherical Mercator in closed form, radians: x = R*lon, y = R*ln(tan(pi/4 + lat/2)).
+    xs, ys = transform(wgs84, mercator, [4.3517], [50.8503])
+    assert abs(xs[0] - 484429.03) < 0.01, xs
+    assert abs(ys[0] - 6594856.12) < 0.01, ys
 
     package = os.path.dirname(os.path.abspath(fiona.__file__))
     site_packages = os.path.dirname(package)

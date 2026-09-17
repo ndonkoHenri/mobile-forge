@@ -1,9 +1,9 @@
 import pytest
 
 def test_import_pyproj():
-    """`import pyproj` loads `_geod`/`_crs`/`_context` etc., which link libproj.
-    On iOS that only resolves if the preload shim found libproj.dylib after
-    flet relocated the extensions into frameworks."""
+    """`import pyproj` loads `_geod`/`_crs`/`_context` etc., which link the shared
+    libproj: `@rpath/libproj.dylib` on iOS, which flet relocates into a framework,
+    and `libproj.so` by basename out of jniLibs on Android."""
     import pyproj
 
     assert hasattr(pyproj, "Geod")
@@ -70,8 +70,9 @@ def test_epsg_codes_resolve_where_proj_db_reached_the_device():
     wgs84 = "+proj=longlat +datum=WGS84 +no_defs"
     mercator = "+proj=merc +a=6378137 +b=6378137 +lon_0=0 +units=m +no_defs"
     x, y = Transformer.from_crs(wgs84, mercator, always_xy=True).transform(4.3517, 50.8503)
-    assert abs(x - 484409.0) < 5000, x
-    assert abs(y - 6593200.0) < 5000, y
+    # Spherical Mercator's closed form: x = a*lon, y = a*ln(tan(pi/4 + lat/2)).
+    assert abs(x - 484429.03) < 0.01, x
+    assert abs(y - 6594856.12) < 0.01, y
 
     crs = CRS.from_epsg(4326)
     assert crs.to_epsg() == 4326, f"database at {shipped[0]} but EPSG:4326 did not resolve"
