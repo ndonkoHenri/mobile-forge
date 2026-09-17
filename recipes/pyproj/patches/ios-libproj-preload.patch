@@ -50,7 +50,7 @@ basename out of jniLibs, and both halves are inert on a desktop.
 +        "opt",
 +        "lib",
 +    )
-+    for _mf_base in ("libproj"):
++    for _mf_base in ("libproj",):
 +        _mf_dylib = _mf_os.path.join(_mf_optlib, _mf_base + ".dylib")
 +        if _mf_os.path.exists(_mf_dylib):
 +            try:
