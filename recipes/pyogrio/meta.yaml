@@ -35,6 +35,17 @@ build:
     LDFLAGS: '-Wl,-headerpad_max_install_names'
 # {% endif %}
 
+# Not a pyogrio dependency: on Android PROJ's database reaches the device only
+# inside pyproj, and the EPSG test decides its branch from whether it did.
+test:
+  requires:
+    - pyproj
+
+# App-level, never inherited from a dependency. PROJ opens proj.db by path, which
+# a file inside sitepackages.zip does not have.
+extract_packages:
+  - pyproj
+
 patches:
   - mobile.patch
   - ios-libgdal-preload.patch

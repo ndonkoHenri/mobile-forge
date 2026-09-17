@@ -1,7 +1,10 @@
+import pytest
+
+
 def test_gdal_version():
     """`rasterio.__gdal_version__` reads from `rasterio._base` (a Cython
     extension that links libgdal). Confirms the native extension loaded
-    and libgdal is reachable — the canary for the GDAL_LIBS chain
+    and libgdal is reachable — the canary for the GDAL_LIBS link
     declared in meta.yaml (mirrors recipes/pyogrio's test_gdal_version).
     """
     import rasterio
@@ -15,16 +18,12 @@ def test_gdal_version():
 
 
 def test_drivers_listed():
-    """Touches `rasterio._env` (driver registration) + `rasterio.drivers`.
-    Asks for the registered raster driver count to confirm GDAL's
-    driver registry initialised inside the Cython binding."""
-    import rasterio
+    """Imports `rasterio.drivers`, which loads `rasterio._base`.
 
-    # `rasterio.drivers` is the public driver-management module; the
-    # `is_blacklisted` predicate is the cheapest call that round-trips
-    # through `rasterio._env.GDALEnv` and proves the driver registry
-    # initialised. GTiff is universal in any GDAL build with raster
-    # support.
+    `is_blacklisted` is a pure-Python dict lookup, so the driver registry
+    itself goes untested here; `test_geotiff_round_trip` and
+    `test_shutil_sees_and_copies_a_dataset` cover it."""
+    import rasterio
     from rasterio.drivers import is_blacklisted
 
     # Built-in driver — should not be blacklisted.
@@ -34,14 +33,12 @@ def test_drivers_listed():
 def test_geotiff_round_trip(tmp_path):
     """Write a GeoTIFF and read it back — the path listing drivers does not cover.
 
-    This is the test that would have caught the iOS driver-registry split, and
-    the reason `test_drivers_listed` above cannot: with a static libgdal each
-    extension links its own GDAL and gets its own registry. `rasterio.Env()`
-    registers inside `_env`, which is what makes the listing succeed, while
-    `rasterio.open` resolves the driver name inside `_base` — a registry nobody
-    had populated. The failure is
+    Guards the single driver registry, which `test_drivers_listed` cannot: a
+    static libgdal gives each extension its own GDAL and its own registry.
+    `rasterio.Env()` registers inside `_env`, while `rasterio.open` resolves the
+    driver name inside `_base`, whose registry is then empty. The failure is
     `DriverRegistrationError: ('No such driver registered: %s', b'GTiff')`
-    raised in the same process that has just listed GTiff as available.
+    raised in a process that lists GTiff as available.
 
     So this asserts the round trip rather than the registry: write real pixels
     through the GTiff driver, read them back, and compare. A wheel that can
@@ -75,13 +72,13 @@ def test_shutil_sees_and_copies_a_dataset(tmp_path):
     """`rasterio.shutil` resolves driver names in its own module — cover it too.
 
     `_base`, `_io` and `shutil` are the three modules whose own code calls
-    `GDALGetDriverByName`, so under a static libgdal each needs its registry
-    populated. `test_geotiff_round_trip` covers the first two and stops there.
+    `GDALGetDriverByName`, so a static libgdal would leave each with a registry
+    of its own to populate. `test_geotiff_round_trip` covers the first two.
 
     `exists` is the interesting half. It identifies a format by asking every
-    registered driver, and asking none of them is not an error — so on an
-    unregistered `shutil` it reports False for a file it just failed to open,
-    and nothing raises. Assert the True, or the bug reads as a normal answer.
+    registered driver, and asking none of them is not an error — so with an
+    empty registry it reports False for a file just written, and nothing
+    raises. Assert the True, or the bug reads as a normal answer.
     """
     import numpy as np
     import rasterio
@@ -103,3 +100,60 @@ def test_shutil_sees_and_copies_a_dataset(tmp_path):
 
     with rasterio.open(copied) as src:
         assert int((src.read(1) != 7).sum()) == 0, "pixels differ after a copy"
+
+
+def test_epsg_codes_work_where_proj_db_reached_the_device():
+    """EPSG codes resolve iff PROJ's database is on disk — assert whichever holds.
+
+    `flet-libproj` ships `proj.db` in `opt/share/proj`, a real directory on iOS,
+    and the preload shim points `PROJ_DATA` at it. On Android that tree never
+    arrives, so the shim points at pyproj's extracted copy when there is one and
+    leaves the variable unset when there is not. Both outcomes are correct for
+    their install; asserting the wrong one is the failure this catches.
+
+    Decide from the shipped artifact, not from what PROJ reports, or the test
+    passes in both branches and proves neither. The candidates follow
+    `rasterio/env.py`'s own precedence: a set `PROJ_DATA`/`PROJ_LIB` is the only
+    place PROJ looks, so a bundled directory elsewhere must not count. A
+    proj-string transform is the control and must work either way.
+    """
+    import os
+
+    import rasterio
+    from rasterio.crs import CRS
+    from rasterio.errors import CRSError
+    from rasterio.warp import transform
+
+    wgs84 = "+proj=longlat +datum=WGS84 +no_defs"
+    mercator = "+proj=merc +a=6378137 +b=6378137 +lon_0=0 +units=m +no_defs"
+    xs, ys = transform(wgs84, mercator, [4.3517], [50.8503])
+    assert 484_000 < xs[0] < 485_000, xs
+    assert 6_593_000 < ys[0] < 6_596_000, ys
+
+    package = os.path.dirname(os.path.abspath(rasterio.__file__))
+    env_var = next((v for v in ("PROJ_DATA", "PROJ_LIB") if os.environ.get(v)), None)
+    if env_var:
+        # The shim's choice (iOS: opt/share/proj; Android: pyproj's extracted
+        # copy), or the app's own.
+        roots = os.environ[env_var].split(os.pathsep)
+    else:
+        roots = [
+            # where flet-libproj ships it
+            os.path.join(os.path.dirname(package), "opt", "share", "proj"),
+            # where rasterio's own PyPI wheel bundles one on a desktop
+            os.path.join(package, "proj_data"),
+        ]
+    have_db = any(os.path.exists(os.path.join(r, "proj.db")) for r in roots)
+
+    if have_db:
+        assert CRS.from_epsg(4326).to_epsg() == 4326
+        # 15E is UTM zone 33's central meridian, so the easting is the 500000
+        # false easting exactly — checkable from the definition, not from a run.
+        xs, ys = transform("EPSG:4326", "EPSG:32633", [15.0], [60.0])
+        assert abs(xs[0] - 500000.0) < 0.01, xs
+        assert abs(ys[0] - 6651411.19) < 0.5, ys
+    else:
+        with pytest.raises(CRSError):
+            CRS.from_epsg(4326)
+        with pytest.raises(CRSError):
+            transform("EPSG:4326", "EPSG:32633", [15.0], [60.0])
