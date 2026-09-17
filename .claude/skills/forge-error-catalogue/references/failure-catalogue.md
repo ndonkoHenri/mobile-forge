@@ -1792,26 +1792,24 @@ The tell is a symbol that plainly belongs to a *different* library than the one 
 `import fiona` failing on `_geod_init` (that is PROJ, not GDAL), or on `_TIFFClientOpen`
 (libtiff) or `_psl_builtin` (libpsl).
 
-**Fix:** name the whole dependency chain, not just the top library, so each extension's
-link command pulls the missing objects straight out of the archives. In the recipe's
-iOS branch:
+**Fix:** build the upper `flet-lib*` SHARED for iOS so it resolves its own dependency
+tree once — see "THE COMPLETE FIX" under the split-registry entry below. That is what
+`flet-libgdal` (build 3) and `flet-libproj` (build 11) do, and their consumers link
+`gdal`/`proj` alone.
+
+**Workaround** only for a static lib that cannot go shared: name the whole chain so each
+extension's link pulls the missing objects out of the archives —
 
 ```yaml
 # {% if sdk != 'android' %}
     GDAL_LIBS: gdal,proj,tiff,curl,psl,sqlite3,jpeg,ssl,crypto,z
-    LDFLAGS: '-undefined dynamic_lookup'
 # {% endif %}
 ```
 
-Shipped in `recipes/{gdal,fiona,rasterio,pyogrio}` (`GDAL_LIBS`) and `recipes/pyproj`
-(`PROJ_LIBS`, minus `gdal`). **Mind the variable name** — pyogrio takes
-`GDAL_LIBRARY_PATH` (one directory), fiona and rasterio take `GDAL_LIB_PATH` (a
-colon-separated list); they differ by one word and are easy to copy wrong.
-
-The real fix is upstream of all of them: align `flet-libgdal`'s iOS cmake with its Android
-side (`-DGDAL_USE_CURL=OFF`, `-DGDAL_USE_TIFF_INTERNAL=ON`, …) so `libgdal.a` stops
-leaking references in the first place. Until that lands, every new GDAL or PROJ consumer
-needs the same list.
+— which also copies every transitive library into every extension (size, and split
+native state). **Mind the variable name** — pyogrio takes `GDAL_LIBRARY_PATH` (one
+directory), fiona and rasterio take `GDAL_LIB_PATH` (a colon-separated list); they differ
+by one word and are easy to copy wrong.
 
 **Only a device or simulator catches this** — the wheel builds green, and you cannot
 `import` an iOS wheel on the macOS build host.
@@ -2110,8 +2108,8 @@ library instances, so configuration set through one extension (`rasterio.Env()`,
 `pyogrio.set_gdal_config_options()`) still does not reach another.
 
 **THE COMPLETE FIX — build the `flet-lib*` SHARED for iOS.** Done for
-`flet-libgdal` (build 3, 2026-08-27) and verified on device for all four
-consumers; it retires the per-extension registration patches outright. Recipe:
+`flet-libgdal` (build 3, 2026-08-27) and `flet-libproj` (build 11) and verified on
+device for all five consumers; it retires the per-extension registration patches outright. Recipe:
 
 1. **`-DBUILD_SHARED_LIBS=ON`** in the iOS branch. One line, and the rest is what
    it exposes.
@@ -2133,7 +2131,9 @@ consumers; it retires the per-extension registration patches outright. Recipe:
    so put those libraries on the library's link line. Do NOT paper over it with
    `-undefined dynamic_lookup`: that turns a link error into a dlopen crash and
    puts the transitive copies back in every extension.
-5. **Consumers:** collapse the lib chain to the one library, DELETE
+5. **Consumers:** collapse the lib chain to the one library — and when that equals
+   upstream's own default (`libraries = ['gdal']`, `["proj"]`), delete the override hook
+   and its patch hunk too; a dead hook is still context to refresh at every bump. DELETE
    `-undefined dynamic_lookup`, and ADD `-Wl,-headerpad_max_install_names` —
    serious_python rewrites each extension's dep from `@rpath/libX.dylib` to the
    much longer `@rpath/opt.lib.libX.framework/opt.lib.libX`, setuptools links with
@@ -2143,7 +2143,12 @@ consumers; it retires the per-extension registration patches outright. Recipe:
    extension into its own framework while the dylib stays a plain file in
    `opt/lib`, and nothing on a relocated extension's rpath resolves it, so load it
    `RTLD_GLOBAL` first (with a `<name>.fwork` marker fallback). Precedents: `av`
-   (49 extensions), `pyarrow`, `pymupdf`.
+   (49 extensions), `pyarrow`, `pymupdf`. **Possibly redundant once 5 is in:** pyproj
+   build 2's preload loop was a silent no-op (`("libproj")` is a string, so it iterated
+   characters) and its iOS tests still passed on the simulator (CI run 33171345776) —
+   serious_python's install-name rewrite plus the app's `@executable_path/Frameworks`
+   rpath may resolve the dylib alone. Unverified for the GDAL consumers; test removal on
+   one before copying the shim into a new recipe.
 
 **Verify:** `file` → `Mach-O … dynamically linked shared library`; `otool -D` →
 `@rpath/libX.dylib`; `otool -L` on the lib → system libraries only; and on every
