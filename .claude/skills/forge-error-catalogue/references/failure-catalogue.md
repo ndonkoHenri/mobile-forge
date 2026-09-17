@@ -1358,7 +1358,12 @@ extracting site-packages to disk. Now, on **Android**:
   per-module **`.soref`** marker left in the zip — written **only** for filenames
   matching `\.(cpython-[^/]+|abi3)\.so$`;
 - `opt/` trees from `flet-lib*` wheels are copied to `jniLibs` by `copyOpt`, which
-  takes **only `**/*.so`** (non-`.so` data is dropped);
+  takes **only `**/*.so`** — and the rest of the tree does not reach site-packages
+  either. Verified by unpacking an APK: `sitepackages.zip` carries the packages and
+  **no `opt/` entries at all**. So a data file in a `flet-lib*` `opt/` tree does not
+  exist on an Android device in any form, and `extract_packages: [opt]` cannot help
+  (there is nothing to extract). **iOS is the opposite**: the whole `opt/` tree lands
+  as a real directory, `site-packages/opt/…`, readable by path;
 - packages are compiled to `.pyc` and the `.py` source is stripped (except the app,
   which sets `[tool.flet.compile] app = false`).
 
@@ -1398,6 +1403,27 @@ below). And it does NOT help when the missing data file lives in a *flet-lib\**
 because `copyOpt` copies only `**/*.so`); the fix there is to ship the data file
 **inside the python package's own wheel** + load it from memory — see the dedicated
 python-magic entry below.
+
+**`extract_packages` is APP-LEVEL and is never inherited from a dependency.** flet
+reads it only from the app's own `pyproject.toml`. A recipe's meta.yaml field feeds
+the recipe-tester for *that* recipe's tests and nothing else — so a real app using
+the package must declare it itself, and a consumer recipe whose tests depend on
+*another* package being extracted must name that package (fiona extracts `pyproj`).
+Miss it and the payload stays inside `sitepackages.zip`, and the code path that
+needs it fails quietly or takes a fallback. **The tell is `assets/extract.zip` in
+the built APK:** 22 bytes means nothing was extracted, whatever the recipe says.
+This is how a PROJ database route was nearly documented as "install pyproj and EPSG
+codes work": a fiona run passed with a 22-byte `extract.zip`, having taken its
+no-database branch.
+
+**Worked example — a data file that must work on both platforms (PROJ's `proj.db`):**
+ship it in the `flet-lib*` `opt/share/…` for iOS, where it is a real path; and ship a
+second copy inside a Python package for Android only (a jinja-gated build switch
+plus a patch that stages it into the package tree), which the app extracts. A shim
+that runs before the first extension import points the library at whichever copy
+exists, locating the Android one with `importlib.util.find_spec()` so the carrier
+package is never imported. One copy per platform. See recipes/flet-libproj,
+recipes/pyproj (`stage-proj-db.patch`) and the `ios-libgdal-preload.patch` shims.
 
 ---
 
@@ -2117,7 +2143,7 @@ consumers; it retires the per-extension registration patches outright. Recipe:
    extension into its own framework while the dylib stays a plain file in
    `opt/lib`, and nothing on a relocated extension's rpath resolves it, so load it
    `RTLD_GLOBAL` first (with a `<name>.fwork` marker fallback). Precedents: `av`
-   (49 extensions, on the `pyav` branch), `pyarrow`, `pymupdf`.
+   (49 extensions), `pyarrow`, `pymupdf`.
 
 **Verify:** `file` → `Mach-O … dynamically linked shared library`; `otool -D` →
 `@rpath/libX.dylib`; `otool -L` on the lib → system libraries only; and on every

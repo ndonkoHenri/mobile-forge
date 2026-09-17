@@ -285,7 +285,12 @@ Android passed throughout, because its libraries were already shared.
 Two consequences:
 
 - **Validate such a chain by dispatch, naming every library in `prebuild_recipes` in
-  dependency order.** Expect the accompanying push run to be red and do not chase it.
+  dependency order.** Expect the accompanying push run to be red on the link.
+- **But read the push run before dismissing it.** It is the only configuration that runs
+  the consumers against what is actually published — which is what users have until the
+  library ships. A dispatch prebuilds, so a test's "library not present" branch never
+  executes there. The PROJ database work shipped a test naming `CRSError` for the
+  no-database case; only the push run reached that branch, and it raised `DataDirError`.
 - **Publish order matters at merge.** The libraries must reach the index before or with
   their consumers, or the first consumer build after merge links a stale library.
 

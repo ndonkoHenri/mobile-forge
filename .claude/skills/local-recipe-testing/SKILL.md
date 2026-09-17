@@ -79,7 +79,9 @@ PIP_FIND_LINKS="$(realpath ../../dist)" \
 # 3. Boot any available iPhone sim, install, launch — ALWAYS by explicit UDID
 #    (gotcha #11: `booted` is ambiguous the moment two sims are booted)
 UDID=$(xcrun simctl list devices available | grep -m1 iPhone | grep -o '[0-9A-F-]\{36\}')
-xcrun simctl boot "$UDID" 2>/dev/null ; xcrun simctl bootstatus "$UDID" -b
+# boot only if not booted: `simctl bootstatus -b` can block FOREVER on a device that is
+# already booted (gotcha #15)
+xcrun simctl list devices | grep "$UDID" | grep -q Booted || { xcrun simctl boot "$UDID"; sleep 20; }
 xcrun simctl uninstall "$UDID" com.flet.recipe-tester 2>/dev/null   # gotcha #7's iOS twin
 xcrun simctl install "$UDID" build/ios-simulator/recipe-tester.app
 xcrun simctl launch "$UDID" com.flet.recipe-tester
@@ -183,6 +185,10 @@ grep -c "^def test_" recipe-tester.app/*/app/recipe_tests/test_<pkg>.py   # must
     ls build/ios-simulator/<app>.app/serious_python_darwin_serious_python_darwin.bundle/site-packages
     ```
     The known cause is an extension linked without `-Wl,-headerpad_max_install_names` (see the `forge-error-catalogue` skill), but the check is cheap and catches the whole class. The Android twin is gotcha #12's `unzip -l build/apk/…`.
+
+15. **Bound every `simctl` and `adb` call, and never background a long job with `nohup … &` inside a foreground shell.** Both have cost hours of silent waiting. `xcrun simctl bootstatus -b` blocked indefinitely on a simulator that `simctl list` already showed as Booted; a wedged CoreSimulator later made `simctl launch` — normally instant — hang too (fix: `xcrun simctl shutdown`, `killall -9 Simulator com.apple.CoreSimulator.CoreSimulatorService`, boot again). `adb install` hanging is the Android twin. macOS has no `timeout(1)`, so wrap calls in a shell watchdog that kills after N seconds and **prints which command timed out** — a hang must surface as a named failure, not as quiet. Separately: a `nohup cmd &` launched inside a tool call that then times out is killed with the call's process group, and a watcher pointed at its log waits for a writer that no longer exists. Launch long jobs with the tool's own background mechanism, and check the *job* is alive, not just the watcher.
+
+16. **A test that asserts "A if the feature is present, else B" passes in both branches, so a green result does not tell you which one ran.** This bit repeatedly while verifying PROJ's database on device. Two defences. Decide the branch from the **shipped artifact** (is the file on disk where the recipe puts it?) rather than from what the library reports about itself, which can be wrong in exactly the case under test. And when a pass is load-bearing, confirm the branch once with a **temporary probe**: make the unexpected branch raise, rebuild, run, and restore the real assertion. Cross-check with a physical signal where one exists — for extracted payloads, `assets/extract.zip` in the APK is 22 bytes when nothing was extracted.
 
 ## Model assets & test-only deps
 
