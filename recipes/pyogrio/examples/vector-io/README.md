@@ -20,7 +20,7 @@ What it demonstrates:
   name and silently narrows the 64-bit integer column to `int32`. No attribute *value* is
   lost either way.
 - **A CRS written as a PROJ string rather than an EPSG code.** An authority code is a
-  lookup in PROJ's database, which iOS has unconfigured but Android gets only from an
+  lookup in PROJ's database, which iOS gets automatically but Android only from an
   installed, extracted `pyproj` — see [Coordinate systems](../../README.md#coordinate-systems).
   A PROJ string needs no database, so this app runs unchanged on both. GeoJSON reads the
   layer back as `EPSG:4326` from the driver's own compiled-in WKT; without a database, as on

@@ -157,7 +157,9 @@ if you bundle it as an asset. An environment variable already set is left alone,
 wins. It has to be set before the import: PROJ reads it when it creates its first context.
 The database has to suit this chain's PROJ **9.5.0**, which checks a database's declared layout
 version and rejects an incompatible one with *"It comes from another PROJ installation"*.
-The same PROJ serves every package above, so a database you supply serves all of them.
+gdal, fiona, rasterio and pyogrio all read that variable. pyproj on Android prefers its
+extracted copy, so also call `pyproj.datadir.set_data_dir` after importing it; see
+[`pyproj`](../pyproj).
 
 ### Drivers and codecs
 
@@ -199,9 +201,9 @@ systems that do work are `/vsimem/`, `/vsizip/`, `/vsitar/`, `/vsigzip/`, `/vsis
 `osgeo` is six compiled extensions — `_gdal`, `_gdalconst`, `_ogr`, `_osr`, `_gnm` and
 `_gdal_array` — and **on both platforms they link one shared GDAL**: `libgdal.so` on Android,
 `libgdal.dylib` on iOS, which in turn links one shared PROJ. A process therefore has one
-driver registry and one set of configuration options, and
-[`fiona`](../fiona), [`rasterio`](../rasterio), [`pyogrio`](../pyogrio) and
-[`pyproj`](../pyproj) share them when installed alongside. `band.ReadAsArray()` (`_gdal_array`
+driver registry and one set of configuration options, which [`fiona`](../fiona),
+[`rasterio`](../rasterio) and [`pyogrio`](../pyogrio) share when installed alongside;
+[`pyproj`](../pyproj) shares only the PROJ underneath. `band.ReadAsArray()` (`_gdal_array`
 code on a `_gdal` object),
 [`ds.GetSpatialRef()`](https://gdal.org/en/stable/api/python/raster_api.html#osgeo.gdal.Dataset.GetSpatialRef)
 (a `_gdal` result whose methods run in `_osr`) and
@@ -212,12 +214,13 @@ code on a `_gdal` object),
 `import osgeo.gdal` is never one extension — **it maps four**: `_gdal`, `_gdalconst`, `_ogr`
 and `_osr`, because `osgeo/gdal.py` does a module-level `from . import ogr` / `from . import
 osr`. The imports are unconditional in upstream's SWIG output. The four are thin wrappers —
-2,884,216 bytes on Android arm64-v8a — over the one `libgdal`; the example prints the live
+2,873,720 bytes on Android arm64-v8a — over the one `libgdal`; the example prints the live
 number on screen.
 
-On iOS, flet relocates each extension into its own framework while `libproj.dylib` and
-`libgdal.dylib` stay plain files in `site-packages/opt/lib`, so `osgeo/__init__.py` loads both
-`RTLD_GLOBAL` before the first extension import.
+On iOS, flet moves each extension and each dylib into its own framework, rewrites the
+extensions' `@rpath` links to match, and leaves a `.fwork` marker in `opt/lib`.
+`osgeo/__init__.py` also preloads `libproj`, then `libgdal`, `RTLD_GLOBAL` — from `opt/lib`,
+or through the marker — before the first extension import.
 
 ### Threading
 
@@ -247,7 +250,7 @@ background threads, so end the handler with an explicit
 
 **The wheel is small and about the same on both platforms; the shared GDAL chain behind it is
 the payload.** On Android arm64-v8a the wheel is about 1.4 MB, unpacking to about 5.4 MB, of
-which 3,163,704 bytes is the six extensions — on top of 22.8 MB of shared native libraries,
+which 3,153,032 bytes is the six extensions — on top of 22.8 MB of shared native libraries,
 most of it `libgdal.so` itself. An iOS slice is 1.3–1.4 MB compressed and 5.3–5.6 MB
 unpacked, plus the `libgdal.dylib` and `libproj.dylib` that `flet-libgdal` and `flet-libproj`
 install. Those libraries are shared with every other GDAL or PROJ consumer in the app, so
@@ -319,23 +322,23 @@ unhandled exception in a Flet handler produces `SESSION_CRASHED` and you lose th
 ### Recipe shape
 
 Two recipes: `flet-libgdal` builds GDAL, `recipes/gdal` builds upstream's own bindings
-against it. Each patch explains itself in its preamble — `config.patch` its two hunks and bump
-hazard, `ios-libgdal-preload.patch` the iOS dylib preload and the `PROJ_DATA` lookup — and
-`meta.yaml` comments its `GDAL_LIBS`, `LDFLAGS` and version pin next to them.
+against it. Each patch explains itself in its preamble — `config.patch` its `gdal-config`
+short-circuit, `ios-libgdal-preload.patch` the iOS dylib preload and the `PROJ_DATA` lookup —
+and `meta.yaml` comments its version pin, `LDFLAGS` and `pyproj` test entries in place.
 
 **Almost everything the consumer sections warn about is a `flet-libgdal` decision, not a gdal
 one.** The eleven-driver registry, the codec set, the missing `GDAL_DATA`, where `proj.db`
 lives, and the absent GEOS and libcurl all come from that recipe and from `flet-libproj`. A
 `flet-libgdal` bump can invalidate most of this README without a line changing here.
 
-**`GDAL_LIBS` is a single entry, and that is load-bearing.** On iOS `flet-libgdal` ships one
-de-versioned `opt/lib/libgdal.dylib`, install id `@rpath/libgdal.dylib`, built on GDAL's
-internal libtiff, libjpeg, zlib and json-c. Its only `@rpath` dependency is
-`@rpath/libproj.dylib`, which carries PROJ's own libtiff, libjpeg-turbo, libcurl, libpsl and
-OpenSSL; the rest is the system sqlite3 and zlib. The six extensions link that one image and
-share one driver registry. If an extension ever links a static `libgdal.a`, or names archives
-from the chain, it gets a private GDAL and a private registry — the check is under
-**Upgrade hazards**.
+**The extensions link `gdal` alone — setup.py's own `libraries = ['gdal']` — and that is
+load-bearing.** On iOS `flet-libgdal` ships one de-versioned `opt/lib/libgdal.dylib`, install
+id `@rpath/libgdal.dylib`, built on GDAL's internal libtiff, libjpeg, zlib and json-c. Its only
+`@rpath` dependency is `@rpath/libproj.dylib`, which carries PROJ's own libtiff,
+libjpeg-turbo, libcurl, libpsl and OpenSSL; the rest is the system sqlite3 and zlib. The six
+extensions link that one image and share one driver registry. If an extension ever links a
+static `libgdal.a`, or a link hook starts naming archives from the chain, it gets a private
+GDAL and a private registry — the check is under **Upgrade hazards**.
 
 `-undefined dynamic_lookup` is not used: an unresolved symbol against a real dylib is a defect
 that has to fail at link, not at `dlopen` on a device. iOS links with
@@ -369,11 +372,14 @@ six-after-`UseExceptions()` are upstream source behaviour, not ours.
 - **That nothing in the wheel reads a file from its own installation.** This is what keeps
   gdal off `extract_packages` on Android, where site-packages is a zip: the wheel ships no
   non-code data files at all, and `osgeo/__init__.py` uses `__file__` only to derive a module
-  name for `swig_import_helper` and, in the preload shim, to test whether `opt/lib` and
-  `opt/share/proj` exist beside site-packages — never to open a file. A bump that starts
-  shipping a data file — a `drivers.ini`, a PROJ or GDAL data tree — or that opens one relative
-  to `__file__` turns that into a `NotADirectoryError` on Android and nothing anywhere else. Re-check both on every bump:
-  `unzip -l` the wheel for non-`.py`/`.so` entries, and grep `osgeo/` for `__file__`.
+  name for `swig_import_helper` and, in the preload shim, to look in `site-packages/opt/`
+  for `lib/libproj.dylib`, `lib/libgdal.dylib` or their `.fwork` markers
+  (reading a marker it finds) and for `share/proj/proj.db`. Each read waits on an
+  `os.path.exists` hit, and that `opt/` never reaches Android's site-packages, so none runs
+  there. A bump that starts shipping a data file — a `drivers.ini`, a PROJ or GDAL data tree —
+  or that opens one relative to `__file__` turns that into a `NotADirectoryError` on Android
+  and nothing anywhere else. Re-check both on every bump: `unzip -l` the wheel for
+  non-`.py`/`.so` entries, and grep `osgeo/` for `__file__`.
 
 A green build establishes almost none of what this page claims.
 
@@ -382,8 +388,8 @@ A green build establishes almost none of what this page claims.
   `libc++_shared.so` itself, the libproj chain intact, and 16 KB `PT_LOAD` alignment
   everywhere. Note where the requirement actually comes
   from: `libgdal.so` does not name `libc++_shared.so` at all, and gets its C++ symbols from
-  `libproj.so`, which statically links libc++. It is gdal's own SWIG extensions — `_gdal`,
-  `_ogr`, `_osr` and `_gnm` — that each name `libc++_shared.so` directly, which is why
+  `libproj.so`, which statically links libc++. It is gdal's own SWIG extensions — every one
+  but `_gdalconst` — that each name `libc++_shared.so` directly, which is why
   dropping the wheel fails at `dlopen` of an extension rather than at anything GDAL-shaped.
   iOS: six `MH_DYLIB`, each with `otool -L` naming `@rpath/libgdal.dylib` and none defining
   `GDALAllRegister`; `otool -hv` `TWOLEVEL`; and in the `flet-libgdal` wheel a single
@@ -402,10 +408,10 @@ A green build establishes almost none of what this page claims.
   `LERCDecode` 1; `ZSTDDecode`, `WebPDecode` and `LZMADecode` must be 0 there and in the iOS
   `libgdal.dylib`.
 - **Where the data files are.** `unzip -l` on the gdal and `flet-libgdal` wheels should
-  still match nothing under `proj.db`, `gdal_data`, `proj_data` or `share/`; the
-  `flet-libproj` wheel should carry exactly `opt/share/proj/proj.db` (9,261,056 bytes in
-  build 11). If `GDAL_DATA` starts shipping, or `proj.db` moves, **Coordinate systems** needs
-  rewriting.
+  still match nothing under `proj.db`, `gdal_data/`, `proj_data/` or `share/`; the
+  `flet-libproj` wheel should carry exactly `opt/share/proj/proj.db` (9,261,056 bytes in the
+  iOS build 11 wheels, 9,240,576 in the Android ones). If `GDAL_DATA` starts shipping, or
+  `proj.db` moves, **Coordinate systems** needs rewriting.
 - **The two PROJ routes.** On iOS, EPSG codes resolving with no app configuration. On
   Android, `assets/extract.zip` in a built APK is 22 bytes when nothing was extracted and
   about 9.6 MB when pyproj's database was — the cheap check that `extract_packages` took,
@@ -418,13 +424,12 @@ A green build establishes almost none of what this page claims.
 
 ### Coverage gaps
 
-**EPSG resolution through `osgeo.osr` has not itself run on a device.** The shared-PROJ
-routes are verified through other consumers of the same PROJ: on an iPhone simulator for
-`pyproj` and `fiona`, and on an Android emulator for `pyproj` alone and `fiona` with `pyproj`.
-`test_epsg_codes_work_where_proj_db_reached_the_device` covers gdal's own shim — it decides
-from whether `proj.db` is on disk, and with `pyproj` in `test.requires` and
-`extract_packages` it expects the transform to succeed on both platforms — but it has only
-run on a desktop GDAL so far.
+**EPSG resolution through `osgeo.osr` has run on an iPhone simulator and an Android
+emulator.** `test_epsg_codes_work_where_proj_db_reached_the_device` decides its branch from
+whether `proj.db` is on disk, so a pass alone does not say which branch ran; a run with the
+no-database branch made to fail confirmed the database branch on both, with the Android app
+reading pyproj's extracted copy through gdal's shim. An app-set `PROJ_DATA` has not run on a
+device.
 
 The other tests stay inside `_gdal` and inside the `MEM` driver, so a broken GeoTIFF-on-disk
 path, a broken `_gdal_array` or `_ogr` handoff, or a vanished driver would all pass CI green;

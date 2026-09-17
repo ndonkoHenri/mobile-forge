@@ -14,8 +14,9 @@ from PIL import (
 
 SIZE = 384
 
-# get_supported_codecs() is the one line worth printing on a phone: it reads
-# "jpg, zlib" here and lists jpg_2000 and libtiff as well on a laptop.
+# The codec list differs from the desktop wheel's: "jpg, zlib" on a phone, plus
+# jpg_2000 and libtiff on a laptop. WebP and AVIF are modules, so they never
+# appear here; get_supported() lists both kinds.
 VERSION = f"Pillow {__version__} — codecs: {', '.join(features.get_supported_codecs())}"
 
 # Every effect is the identity at strength 0, so the slider always runs from the

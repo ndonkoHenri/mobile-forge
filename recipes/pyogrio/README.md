@@ -23,15 +23,16 @@ Both platforms read and write, and this is a deliberately small GDAL behind them
 drivers and no GDAL data directory. **Formats** below says what that rules out — GeoPackage
 is not one of the six.
 
-EPSG codes resolve too: `flet-libproj` ships PROJ's database and pyogrio points PROJ at it.
-Automatic on iOS; on Android it needs [`pyproj`](../pyproj) installed and `extract_packages`
-set, for the reason **Coordinate systems** gives. Proj-strings need no database at all and
-are the portable choice for code that runs on both.
+EPSG codes resolve too: PROJ's database reaches the device through `flet-libproj` on iOS and
+through [`pyproj`](../pyproj) on Android, and pyogrio points PROJ at whichever copy is there.
+Automatic on iOS; on Android it needs pyproj installed and `extract_packages` set, for the
+reason **Coordinate systems** gives. Proj-strings need no database at all and are the
+portable choice for code that runs on both.
 
-Both platforms share one GDAL, so the wheels are small and near-identical: an iOS slice is
-0.6–0.7 MB compressed and 2.2–2.3 MB unpacked, against 0.6 MB and 1.9 MB for an Android
-wheel. The GDAL chain itself ships separately, in `flet-libgdal` and `flet-libproj`, and
-**App size** covers it.
+Both platforms link one shared GDAL, so the wheels are small and near-identical: an iOS slice
+is 0.6–0.7 MB compressed and 2.2–2.3 MB unpacked, against 0.6 MB and 1.7–2.0 MB for an
+Android wheel. The GDAL chain itself ships separately, in `flet-libgdal` and `flet-libproj`,
+and **App size** covers it.
 
 ## Examples
 
@@ -139,7 +140,7 @@ write(..., crs="+proj=longlat +datum=WGS84 +no_defs")
 ```
 
 **An EPSG code needs PROJ's database, and where that comes from differs by platform.**
-`flet-libgdal` resolves one shared PROJ for every consumer, so whichever package supplies the
+Every GDAL or PROJ consumer in the app shares one PROJ, so whichever package supplies the
 database supplies it for all of them.
 
 - **iOS: codes just work.** `flet-libproj` ships `proj.db` and `pyogrio/__init__.py` points
@@ -174,9 +175,9 @@ unchanged and tagged `EPSG:4326` on a desktop GDAL 3.11.4, silently. Transform b
 ### App size
 
 On Android the wheels are approximately 0.60–0.64 MB compressed and 1.7–2.0 MB unpacked, but
-the shared GDAL chain behind them adds about 21.5 MB of libraries per ABI — on arm64-v8a,
-`libgdal.so` at 14.0 MB and `libproj.so` at 4.6 MB, then libturbojpeg, libtiff, libcurl,
-libjpeg and libpsl. Use an app bundle, split APKs, or narrow
+the shared GDAL chain behind them adds 14.9–23.6 MB of libraries per ABI — 21.5 MB on
+arm64-v8a, where `libgdal.so` is 14.0 MB and `libproj.so` 4.6 MB, then libturbojpeg, libtiff,
+libcurl, libjpeg and libpsl. Use an app bundle, split APKs, or narrow
 [`target_arch`](https://flet.dev/docs/publish/android/#supported-target-architectures) when
 the app does not need every ABI.
 
@@ -184,10 +185,10 @@ On iOS the chain is two dylibs: `libgdal.dylib` from `flet-libgdal`, and `libpro
 from `flet-libproj`, which absorbs libtiff, libjpeg-turbo, libcurl, libpsl and OpenSSL and
 ships `proj.db` beside it. An `ipa` carries one slice. On both platforms the chain is shared
 by every GDAL consumer in the app — [`gdal`](../gdal), [`fiona`](../fiona),
-[`rasterio`](../rasterio), [`pyproj`](../pyproj) — so pairing one with pyogrio adds no
-second GDAL.
+[`rasterio`](../rasterio) — and its PROJ also by [`pyproj`](../pyproj), so pairing any of
+them with pyogrio adds no second GDAL or PROJ.
 
-Just over half of each unpacked Android wheel — 1,008,031 bytes on every architecture — is
+Over half of each unpacked Android wheel — 1,008,031 bytes on every architecture — is
 `pyogrio/tests` and its fixtures, which your app never imports. Flet's default
 [cleanup](https://flet.dev/docs/publish/#compilation-and-cleanup) strips headers and static
 archives, not test suites, so name it:
@@ -234,9 +235,10 @@ validate format and CRS choices on a device or emulator.
 
 This is a consumer of the `flet-libgdal` chain, and both platforms resolve one shared image:
 `libgdal.so` on Android, `libgdal.dylib` on iOS. All five extensions — `_ogr`, `_io`,
-`_geometry`, `_err`, `_vsi` — link it, so an app has one driver registry and one PROJ, shared
-with gdal, fiona, rasterio and pyproj. `ios-libgdal-preload.patch`'s preamble owns its
-mechanism and `meta.yaml`'s comments own the individual settings; do not restate either here.
+`_geometry`, `_err`, `_vsi` — link it, so an app has one driver registry, shared with gdal,
+fiona and rasterio, and one PROJ, which pyproj shares too. `ios-libgdal-preload.patch`'s
+preamble owns its mechanism and `meta.yaml`'s comments own the individual settings; do not
+restate either here.
 
 **The shared library is load-bearing, not an optimisation.** A static GDAL is copied *into*
 every extension that links it, giving each its own driver registry and configuration.
@@ -295,7 +297,8 @@ database, before reaching the thing it exists to check.
 branch from whether `proj.db` is on disk, not from what PROJ reports: with one, an
 `EPSG:32633` write reads back as that code and an RFC7946 write reprojects the point to 15°E,
 60°N; without one, the write must raise `CRSError`. `meta.yaml` installs and extracts pyproj
-for the tests, so the database branch is the expected one on both platforms.
+for the tests, and a run with the no-database branch made to fail confirmed the database
+branch on an iPhone simulator and an Android emulator.
 
 Not covered on device: the attribute round trip, the Shapefile's sibling files, in-memory `/vsimem`
 datasets, the Arrow API, appending to a layer, and geopandas. The **Formats**, **Coordinate

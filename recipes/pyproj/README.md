@@ -140,9 +140,9 @@ pyproj.datadir.set_data_dir(proj_dir)     # after it
 [`get_data_dir`](https://pyproj4.github.io/pyproj/stable/api/datadir.html#pyproj.datadir.get_data_dir)
 prefers it, then pyproj's own `proj_dir`, and only then `PROJ_DATA`, so the extracted copy
 outranks the variable. The variable is still worth setting, because it is the only one that
-applies before any import — PROJ reads it when a context is first created — and the GDAL
-packages' shims leave a value you set alone. Both mechanisms were verified in the main thread
-and in worker threads, which build their own PROJ context.
+applies before any import, and the GDAL packages' shims leave a value you set alone. Both
+mechanisms were verified in the main thread and in worker threads, which build their own PROJ
+context.
 [`append_data_dir`](https://pyproj4.github.io/pyproj/stable/api/datadir.html#pyproj.datadir.append_data_dir)
 adds a directory without displacing the first, which is how you add grid files and keep the
 shipped database: PROJ takes the *database* from the first entry and treats the rest as search
@@ -228,27 +228,26 @@ and auto-update does not reach background threads, so end the handler with an ex
 
 ### App size
 
-Everything in the wheel except the extensions is about 545 KB on every slice. On Android:
+Everything in the wheel except the extensions and, on Android, `proj.db` is about 549 KB on
+every slice. On Android the wheel also carries the 9.24 MB database:
 
 | slice | wheel | unpacked | the ten extensions |
 | --- | --- | --- | --- |
-| Android arm64-v8a | 0.49 MB | 1.6 MB | 1.04 MB |
-| Android armeabi-v7a | 0.46 MB | 1.3 MB | 0.72 MB |
-| Android x86_64 | 0.52 MB | 1.6 MB | 1.02 MB |
+| Android arm64-v8a | 2.28 MB | 10.87 MB | 1.08 MB |
+| Android armeabi-v7a | 2.26 MB | 10.55 MB | 0.76 MB |
+| Android x86_64 | 2.31 MB | 10.86 MB | 1.07 MB |
 
 On iOS the extensions link the shared `libproj.dylib` rather than carrying PROJ, and the wheels
 are 0.55–0.58 MB.
 
 Those are decimal MB; `du -h` and the Finder report binary units and read about 5% lower for
-the same bytes. The Android table excludes `proj.db`, which only the Android wheel carries: it is
-9.26 MB unpacked and brings that wheel to about 2.3 MB. Extracting pyproj adds
-`assets/extract.zip`, about 9.6 MB, to the APK.
+the same bytes. Extracting pyproj adds `assets/extract.zip`, about 9.6 MB, to the APK.
 
 Both platforms load PROJ from a separate shared library on top of that — on Android a chain of
 about 7.5 MB on arm64-v8a, 5.2 MB on armeabi-v7a and 8.3 MB on x86_64; on iOS a single
-`libproj.dylib`, 9.9–10.4 MB unpacked, which absorbs libtiff, libjpeg, libcurl, libpsl and
+`libproj.dylib`, 9.36–9.86 MB unpacked, which absorbs libtiff, libjpeg, libcurl, libpsl and
 OpenSSL rather than chaining to them, shipped beside the 9.26 MB `proj.db` in a `flet-libproj`
-wheel of about 5.4 MB per slice. So on Android, use an app bundle, split APKs, or
+wheel of 5.4–5.7 MB per slice. So on Android, use an app bundle, split APKs, or
 narrow [`target_arch`](https://flet.dev/docs/publish/android/#supported-target-architectures)
 when the app does not need every ABI; that lever is worth more here than the wheel column
 suggests, since the native chain is carried once per ABI. On iOS the same shared
@@ -372,13 +371,17 @@ bundle), `libtiff.so` and `libcurl.so`; `libtiff.so` names `libjpeg.so` and `lib
 `libcurl.so` names `libpsl.so`, `libssl_python.so`, `libcrypto_python.so` and `libz.so`. That
 chain is **7,513,872 bytes of `.so` on arm64-v8a** — `libproj.so` 4,640,656, `libturbojpeg.so`
 748,184, `libtiff.so` 744,048, `libcurl.so` 723,712, `libjpeg.so` 589,784, `libpsl.so` 67,488 —
-against 5,227,468 on armeabi-v7a and 8,347,680 on x86_64, on top of pyproj's own 1,039,288.
+against 5,227,468 on armeabi-v7a and 8,347,680 on x86_64, on top of pyproj's own 1,083,536.
 Every `LOAD` segment in all of them, across all three ABIs, reports `align 0x4000`.
 
 **iOS: one shared `libproj.dylib`, the same shape as Android.** `flet-libproj` ships a real
 shared library, so all ten extensions name `@rpath/libproj.dylib` in `otool -L` and none of
 them carries PROJ itself — check with `nm -a <ext> | grep " [tT] _proj_create"`, which must be
-empty for every one. The extensions are 71 KB–535 KB as a result, against a 550–580 KB wheel.
+empty for every one. The extensions are 30–528 KB as a result, in a 553–576 KB wheel. On iOS,
+flet moves each extension and each dylib into its own framework, rewrites the extensions'
+`@rpath` links to match, and leaves a `.fwork` marker in `opt/lib`. `pyproj/__init__.py` also
+preloads `libproj` `RTLD_GLOBAL` — from `opt/lib`, or through the marker — before the first
+extension import.
 
 What the dylib absorbs is PROJ's own dependency tree — libtiff (GTiff grids), libjpeg (which
 libtiff needs), libcurl (network grids), libpsl and OpenSSL (which libcurl needs) — because
@@ -452,16 +455,16 @@ and three iOS slices, plus a legacy 32-bit `android_24_x86` slice on 3.12, which
   extensions and on `libproj.so`. iOS: ten `MH_DYLIB`s each naming `@rpath/libproj.dylib`, and
   `nm -a <ext> | grep " [tT] _proj_create"` EMPTY for every one. A definition there means the
   link absorbed a static PROJ, which gives each extension a private database search path and
-  makes `set_data_dir` configure one of them. The wheel size is the cheap tell:
-  it should stay well under a megabyte.
+  makes `set_data_dir` configure one of them. The iOS pyproj wheel size is the cheap
+  tell: it should stay well under a megabyte.
 - **A device run of the [`control-points`](examples/control-points) example.** If a pyproj bump
   tightened the data-directory check, every panel becomes a `DataDirError` row — visibly rather
   than silently.
-- **The database is present where each platform reads it.** `unzip -l` every `flet-libproj`
-  wheel for `opt/share/proj/proj.db` (9,261,056 bytes at PROJ 9.5.0; about 5.4 MB of iOS
-  wheel), and every Android pyproj wheel for `pyproj/proj_dir/share/proj/proj.db` (about
-  2.3 MB of wheel), which the build log announces as `mobile-forge: staged …`. The iOS pyproj
-  wheels should carry none.
+- **The database is present where each platform reads it.** `unzip -l` every iOS
+  `flet-libproj` wheel for `opt/share/proj/proj.db` (9,261,056 bytes at PROJ 9.5.0, in a
+  5.4–5.7 MB wheel), and every Android pyproj wheel for `pyproj/proj_dir/share/proj/proj.db`
+  (9,240,576 bytes, in a 2.26–2.31 MB wheel), which the build log announces as
+  `mobile-forge: staged …`. The iOS pyproj wheels should carry none.
 - **The Android extraction tell.** In an APK built with `extract_packages = ["pyproj"]`,
   `assets/extract.zip` is about 9.6 MB; 22 bytes means nothing was extracted and EPSG codes will
   raise.
@@ -474,8 +477,9 @@ and three iOS slices, plus a legacy 32-bit `android_24_x86` slice on 3.12, which
 `test_epsg_codes_resolve_where_proj_db_reached_the_device`. That test decides from the shipped
 file, not from PROJ, whether a database is present; with one, it requires `CRS.from_epsg(4326)`
 and an `EPSG:4326 → EPSG:32633` transform landing on the 500000.0 easting at 15°E, 60°N, after
-a proj-string control; without one it requires `CRS.from_epsg(4326)` to raise `CRSError` or
-`DataDirError`, and runs no control, because pyproj needs a data directory for any transform.
+a spherical Mercator proj-string control checked against its closed form; without one it
+requires `CRS.from_epsg(4326)` to raise `CRSError` or `DataDirError`, and runs no control,
+because pyproj needs a data directory for any transform.
 The database branch has passed on an iOS simulator and on an Android emulator.
 
 Not covered on a device:

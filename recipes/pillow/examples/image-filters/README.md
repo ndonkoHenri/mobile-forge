@@ -17,8 +17,9 @@ What it demonstrates:
 - **Which codecs this build actually has** — the header line prints
   [`features.get_supported_codecs()`](https://pillow.readthedocs.io/en/stable/reference/features.html#PIL.features.get_supported_codecs).
   On a phone it reads `jpg, zlib`; run the same code on your laptop and it also lists
-  `jpg_2000` and `libtiff`. That difference is the one thing worth knowing before porting
-  image code to mobile.
+  `jpg_2000` and `libtiff`. WebP and AVIF are modules, not codecs, so neither appears there;
+  [`features.get_supported()`](https://pillow.readthedocs.io/en/stable/reference/features.html#PIL.features.get_supported)
+  lists modules and codecs together.
 - **Text with no bundled font** —
   [`ImageFont.load_default(size=...)`](https://pillow.readthedocs.io/en/stable/reference/ImageFont.html#PIL.ImageFont.load_default)
   scales a TrueType face embedded in Pillow itself, which is why this app ships no assets at

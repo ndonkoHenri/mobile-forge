@@ -194,8 +194,9 @@ phone. Every one of those is a working desktop run and a crash on device, and th
 comes from whatever the user picked in their gallery, so a desktop pass proves nothing about
 image input. Validate on a device or emulator/simulator, and if you want to see what you
 actually have, print
-[`features.get_supported_codecs()`](https://pillow.readthedocs.io/en/stable/reference/features.html#PIL.features.get_supported_codecs)
-from inside the app rather than trusting the interpreter on your laptop.
+[`features.get_supported()`](https://pillow.readthedocs.io/en/stable/reference/features.html#PIL.features.get_supported),
+which covers modules such as WebP and AVIF as well as codecs, from inside the app rather than
+trusting the interpreter on your laptop.
 
 **Every path Pillow needs comes from your own code.** No module in `PIL` opens a data file
 next to itself, which is why the wheel works unchanged from Android's zipped site-packages
@@ -318,10 +319,11 @@ matching host dep.
 The two platforms differ in where the native code ends up, and `meta.yaml` declares the three
 deps differently per SDK because of it. On Android they are shared libraries the extensions
 load (`DT_NEEDED`), staged into `jniLibs`, so they sit under `requirements.host` and appear in
-the wheel's `Requires-Dist`. On iOS they link statically into `_imaging.so` and `_webp.so`, so
-they sit under `requirements.host_build`: extracted for the link but kept out of the metadata,
-so an app does not download ~16 MB of static archives it can never load. Nothing in the
-consumer API changes; only the payload shape does.
+the wheel's `Requires-Dist`. On iOS they link statically into `_imaging.so` (JPEG),
+`_imagingft.so` (FreeType) and `_webp.so`, so they sit under `requirements.host_build`:
+extracted for the link but kept out of the metadata, so an app does not download ~16 MB of
+static archives it can never load. Nothing in the consumer API changes; only the payload shape
+does.
 
 ### Upgrade hazards
 

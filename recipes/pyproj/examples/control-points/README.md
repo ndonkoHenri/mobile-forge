@@ -58,6 +58,6 @@ uv run flet build ipa
 uv run flet build ios-simulator
 ```
 
-A desktop run (`uv run flet run`) differs only in the data-directory row, which points into
-the desktop wheel's own bundled database, and in timings that move on every run. Every
-coordinate is identical.
+On a desktop run (`uv run flet run`) the version row shows the PROJ release the PyPI wheel
+bundles, the data-directory row points into that wheel's own database, and the timings move
+on every run.

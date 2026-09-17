@@ -62,7 +62,7 @@ def main(page: ft.Page):
                     heading("Axis order"),
                     *(line(row) for row in coordinates.axis_rows()),
                     ft.Divider(),
-                    heading("What needs the real database"),
+                    heading("Authority codes"),
                     line(coordinates.epsg_row()),
                     ft.Divider(),
                     heading("Vectorised round trip"),

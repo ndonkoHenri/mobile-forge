@@ -28,7 +28,7 @@ iPhone simulator with no pixels differing. Both resolve one shared GDAL — `lib
 Android, `libgdal.dylib` on iOS — so there is a single driver registry and a single
 configuration, and `rasterio.Env()` reaches the code doing the I/O on either platform.
 
-An iOS slice is 4.4–4.5 MB compressed and 25.0–25.4 MB unpacked, against 4.2–4.4 MB and
+An iOS slice is about 4.4 MB compressed and 25.0–25.5 MB unpacked, against 4.2–4.4 MB and
 23–24 MB for an Android wheel, plus `flet-libgdal` and `flet-libproj` once per app. Most of
 that unpacked figure is Cython-generated `.c` that Flet's cleanup removes —
 **App size** has the breakdown. If an app only needs raster I/O and not rasterio's API,
@@ -146,8 +146,10 @@ if you bundle it as an asset. An environment variable already set is left alone,
 wins. Set it before the import: PROJ reads it when it creates its first context. After the
 import, rasterio's private `rasterio._env.set_proj_data_search_path(path)` does the same job.
 
-[`pyproj`](../pyproj), [`gdal`](../gdal), [`fiona`](../fiona) and [`pyogrio`](../pyogrio)
-share that one PROJ, so a database you supply serves all of them.
+[`gdal`](../gdal), [`fiona`](../fiona) and [`pyogrio`](../pyogrio) share that one PROJ and
+read the same variable, so a database you supply serves them too. [`pyproj`](../pyproj) on
+Android prefers its extracted copy to `PROJ_DATA`, so point it at yours with
+`pyproj.datadir.set_data_dir`.
 
 ### Threading
 
@@ -197,7 +199,7 @@ wrote them *inside* the file, with no `.ovr` sidecar.
 
 On Android the wheel is roughly 4.2–4.4 MB compressed, but the shared GDAL chain behind it is
 the real payload: about **25 MB of native libraries per ABI on arm64-v8a** — 17 MB on
-armeabi-v7a, 27 MB on x86_64 — of which only about 3.4 MB is rasterio's own extensions. Use an
+armeabi-v7a, 27 MB on x86_64 — of which only about 3.3 MB is rasterio's own extensions. Use an
 app bundle, split APKs, or narrow
 [`target_arch`](https://flet.dev/docs/publish/android/#supported-target-architectures) when the
 app does not need every ABI, and leave Flet's default
@@ -205,8 +207,8 @@ app does not need every ABI, and leave Flet's default
 20 MB of every unpacked wheel is Cython-generated `.c`/`.cpp` source that cleanup removes, and
 nothing in the package reads its own source, so compiling to `.pyc` is safe.
 
-iOS is close behind, and the same cleanup lever does most of the work. A slice is 4.4–4.5 MB
-compressed and 25.0–25.4 MB unpacked, of which roughly 20 MB is the same generated C, so
+iOS is close behind, and the same cleanup lever does most of the work. A slice is about 4.4 MB
+compressed and 25.0–25.5 MB unpacked, of which roughly 20 MB is the same generated C, so
 cleanup takes it to about 5 MB. On top of that the app carries one `flet-libgdal` and one
 `flet-libproj`, shared with every other GDAL and PROJ consumer, so a project using rasterio
 and [`fiona`](../fiona) together pays for them once. An `ipa` ships one slice. Where an app
@@ -290,10 +292,10 @@ emulator before shipping.
   Android and `libgdal.dylib` on iOS, so there is one driver registry and one configuration:
   a [`rasterio.Env()`](https://rasterio.readthedocs.io/en/stable/api/rasterio.env.html#rasterio.env.Env)
   entered around a call is seen by the module doing the I/O, and `rasterio.shutil` resolves
-  the same drivers `rasterio.open` does. The iOS-only wrinkle is invisible from Python: flet
-  relocates each extension into its own framework while the dylibs stay plain files in
-  `opt/lib`, so `rasterio/__init__.py` loads `libproj` and then `libgdal` `RTLD_GLOBAL` before
-  the first extension import.
+  the same drivers `rasterio.open` does. On iOS, flet moves each extension and each dylib into
+  its own framework, rewrites the extensions' `@rpath` links to match, and leaves a `.fwork`
+  marker in `opt/lib`. `rasterio/__init__.py` also preloads `libproj` and then `libgdal`
+  `RTLD_GLOBAL` — from `opt/lib`, or through the marker — before the first extension import.
 
 - **`import rasterio` prints `Warning 3: Cannot find gdalvrt.xsd (GDAL_DATA is not defined)`
   to stderr, and it is expected.** `flet-libgdal` ships no GDAL data directory, and rasterio's
@@ -332,9 +334,9 @@ into `jniLibs/<abi>/` is enough for the loader to resolve it, and every `LOAD` s
 `align 0x4000`. Further down the closure `libproj.so` names `libsqlite3_python.so`,
 `libtiff.so` and `libcurl.so`, and `libcurl.so` names `libpsl.so`, `libssl_python.so` and
 `libcrypto_python.so` — three of those come from Flet's Python bundle rather than from this
-chain. Sizes on cp314, in bytes: arm64-v8a 3,356,840 of rasterio extension against 13,997,320
-of `libgdal.so` and 7,513,872 of PROJ chain; armeabi-v7a 2,242,516 / 9,702,048 / 5,227,468;
-x86_64 3,352,952 / 15,283,480 / 8,347,680.
+chain. Sizes on cp312, in bytes: arm64-v8a 3,309,768 of rasterio extension against 13,997,320
+of `libgdal.so` and 7,513,872 of PROJ chain; armeabi-v7a 2,305,204 / 9,702,048 / 5,227,468;
+x86_64 3,353,768 / 15,283,480 / 8,347,680.
 
 On iOS `flet-libgdal` ships `libgdal.dylib` (install id `@rpath/libgdal.dylib`, its only
 `@rpath` dependency `@rpath/libproj.dylib`), and all fifteen extensions name
@@ -356,10 +358,9 @@ Find those modules by grepping the generated C — `rasterio/*.c` in an Android 
 holds rasterio's own call sites and none of GDAL's.
 
 All fifteen iOS extensions are `MH_DYLIB`, so forge's `MH_BUNDLE` conversion has nothing to
-do, and `otool -L` on each lists its own install name, `@rpath/libgdal.dylib`,
-`@rpath/Python.framework/Python`, `/usr/lib/libsqlite3.dylib`, `/usr/lib/libz.1.dylib` and
-`/usr/lib/libSystem.B.dylib`, plus `/usr/lib/libc++.1.dylib` on the same three that need
-`libc++_shared` on Android.
+do, and `otool -L` on each lists its own install name, `@rpath/Python.framework/Python`,
+`@rpath/libgdal.dylib` and `/usr/lib/libSystem.B.dylib`, plus `/usr/lib/libc++.1.dylib` on
+the same three that need `libc++_shared` on Android.
 
 Two smaller platform differences worth knowing. Android's `libproj.so` links
 `libsqlite3_python.so` from Flet's Python bundle while iOS binds the system
@@ -433,10 +434,10 @@ every non-library file.
 - **The threading results record no platform.** Nothing here says where the SIGBUS runs were
   made, nothing in CI exercises concurrency, and the example is written to avoid it. Say where
   when you re-run them.
-- **The shim's database route is verified on device through its siblings.** Their
-  equivalent `PROJ_DATA` shims resolved EPSG codes for pyproj and fiona on an iPhone
-  simulator, and for pyproj and fiona+pyproj on an Android emulator; no on-device run of
-  rasterio's own EPSG test is recorded here. Nor is a `PROJ_DATA` the app sets itself, on
-  either platform.
-- Nothing on device covers overviews, the `.aux.xml` sidecar, `/vsimem`, `rasterio.warp`, or a
-  raster larger than the 1024×1024 the example writes.
+- **The shim's database route has run on device; an app-set `PROJ_DATA` has not.**
+  `test_epsg_codes_work_where_proj_db_reached_the_device` passes on either branch, so a run
+  with the no-database branch made to fail confirmed the database branch on an iPhone
+  simulator and an Android emulator, the latter reading pyproj's extracted copy through
+  rasterio's shim.
+- Nothing on device covers overviews, the `.aux.xml` sidecar, `/vsimem`, raster reprojection
+  (`rasterio.warp.reproject`), or a raster larger than the 1024×1024 the example writes.

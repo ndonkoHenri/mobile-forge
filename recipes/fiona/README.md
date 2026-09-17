@@ -13,15 +13,16 @@ Both platforms read and write. On both this is a deliberately small GDAL: six ve
 drivers, no `GDAL_DATA`, no GEOS and no libcurl, and none of that announces
 itself at import — **Drivers** and **Coordinate systems** below say what it rules out.
 
-EPSG codes resolve too: `flet-libproj` ships PROJ's database and fiona points PROJ at it.
-That is automatic on iOS; on Android it needs [`pyproj`](../pyproj) installed and
-`extract_packages` set, for the reason **Coordinate systems** gives. Proj-strings need no
-database at all and are the portable choice for code that has to run on both.
+EPSG codes resolve too: PROJ's database reaches the device through `flet-libproj` on iOS
+and through [`pyproj`](../pyproj) on Android, and fiona points PROJ at whichever copy is
+there. That is automatic on iOS; on Android it needs pyproj installed and `extract_packages`
+set, for the reason **Coordinate systems** gives. Proj-strings need no database at all and
+are the portable choice for code that has to run on both.
 
 Both platforms resolve one shared GDAL, so the wheels are small and near-identical: an iOS
-slice is 1.0 MB compressed and 3.1–3.2 MB unpacked, against 0.84–0.96 MB and 1.8–2.6 MB for
-an Android wheel. The GDAL itself is a separate package — `flet-libgdal` — and **App size**
-puts the two together, which is the comparison that decides it.
+slice is 1.0–1.1 MB compressed and 3.1–3.3 MB unpacked, against 0.84–0.96 MB and 1.8–2.6 MB
+for an Android wheel. The GDAL itself is a separate package — `flet-libgdal` — and
+**App size** puts the two together, which is the comparison that decides it.
 
 ## Install
 
@@ -162,9 +163,8 @@ supplies it for all of them.
   open. Both halves are needed:
 
   ```toml
-  dependencies = ["flet", "fiona", "pyproj"]
-
   [tool.flet.android]
+  dependencies = ["fiona", "pyproj"]
   extract_packages = ["pyproj"]   # without this the database stays in the zip
   ```
 
@@ -189,11 +189,16 @@ To use your **own** database instead — a newer PROJ release, or one carrying d
 set `PROJ_DATA` to the directory holding it before importing fiona, from
 [`FLET_ASSETS_DIR`](https://flet.dev/docs/reference/environment-variables/#flet_assets_dir)
 if you bundle it as an asset. An environment variable already set is left alone, so yours
-wins. It has to be set before the import: PROJ reads it when it creates its first context,
-which an API call afterwards is too late for.
+wins. fiona hands `PROJ_DATA` to PROJ at import and again whenever `fiona.open` or
+`fiona.Env()` starts an environment, so after the import set `os.environ["PROJ_DATA"]` and
+call fiona's private `fiona._env.set_proj_data_search_path(path)` together: the call alone
+is undone by the next `fiona.open` while the shim's `PROJ_DATA` is set, and the variable
+alone waits for that `fiona.open`.
 
-[`pyproj`](../pyproj), [`gdal`](../gdal), [`rasterio`](../rasterio) and
-[`pyogrio`](../pyogrio) share that one PROJ, so a database you supply serves all of them.
+[`gdal`](../gdal), [`rasterio`](../rasterio) and [`pyogrio`](../pyogrio) run on the same
+PROJ, so a database you supply serves them too. [`pyproj`](../pyproj) on Android prefers its
+own extracted copy over `PROJ_DATA`, so point it at yours with
+`pyproj.datadir.set_data_dir` as well.
 
 ### Threading
 
@@ -221,13 +226,17 @@ with an explicit
 
 ### App size
 
-Android: 0.84–0.96 MB of compressed wheel and 1.8–2.6 MB unpacked per ABI, on top of roughly
-21–23 MB of shared native libraries per ABI that come with GDAL. iOS: 1.0 MB compressed and
-3.1–3.2 MB unpacked per slice, on top of `flet-libgdal`'s own 9.6–10.4 MB compressed
-(27.6–29.3 MB unpacked), which is one shared `libgdal.dylib` for every consumer in the app.
-Plain `import fiona` maps seven of the eight, and the two platforms are within a factor of
-two of each other for the same work — about 2 MB of native code on Android arm64-v8a
-against about 2.9 MB on the iOS device slice, plus the one shared `libgdal` each.
+Android: 0.84–0.96 MB of compressed wheel and 1.8–2.6 MB unpacked per ABI, on top of the
+shared GDAL chain — every `.so` in `flet-libgdal`, `flet-libproj` and the libtiff, libjpeg,
+libcurl and libpsl wheels beneath PROJ — at about 21.5 MB on arm64-v8a, 14.9 MB on
+armeabi-v7a and 23.6 MB on x86_64, not counting `libc++_shared.so`. iOS: 1.0–1.1 MB
+compressed and 3.1–3.3 MB unpacked per slice, on top of `flet-libgdal`'s 6.1–6.8 MB
+compressed (18.4–19.8 MB unpacked) and `flet-libproj`'s 5.4–5.7 MB (19.2–19.7 MB unpacked,
+9.26 MB of it `proj.db`): one `libgdal.dylib` and one `libproj.dylib` for every consumer in
+the app. Plain `import fiona` maps seven of the eight extensions, and the two platforms are
+within a factor of two of each other for the same work — about 2.1 MB of native code on
+Android arm64-v8a against about 3.0 MB on the iOS device slice, plus the one shared chain
+each.
 
 There is nothing here worth naming to
 [`[tool.flet.cleanup]`](https://flet.dev/docs/publish/#compilation-and-cleanup) — the payload
@@ -235,9 +244,9 @@ is extensions and a little Python, with no test suite or data directory to drop.
 use an app bundle, split APKs, or narrow
 [`target_arch`](https://flet.dev/docs/publish/android/#supported-target-architectures) when
 the app does not need every ABI; that lever is worth more here than the wheel figures
-suggest, because the 21–23 MB of native library is carried once per ABI. These numbers
-describe the package payload, not the amount added to the final APK or IPA; packaging and
-compression determine that.
+suggest, because the GDAL chain is carried once per ABI. These numbers describe the
+package payload, not the amount added to the final APK or IPA; packaging and compression
+determine that.
 
 ### Android
 
@@ -255,16 +264,17 @@ expected here and stops nothing.
 ### iOS
 
 All eight extensions link one `libgdal.dylib`, the same way Android's link one `libgdal.so`,
-so there is a single driver registry, a single configuration and a single PROJ, shared with
-[`gdal`](../gdal), [`rasterio`](../rasterio), [`pyogrio`](../pyogrio) and
-[`pyproj`](../pyproj): [`fiona.Env()`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.Env)
-options reach the code doing the I/O.
+so there is a single driver registry and a single configuration, shared with
+[`gdal`](../gdal), [`rasterio`](../rasterio) and [`pyogrio`](../pyogrio), and a single PROJ
+that [`pyproj`](../pyproj) shares too:
+[`fiona.Env()`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.Env) options reach
+the code doing the I/O.
 
-The delivery is the only iOS-specific part, and it is invisible from Python. flet relocates
-each extension into its own `*.framework` bundle while the dylibs stay plain files in
-`opt/lib`, so `fiona/__init__.py` loads `libproj.dylib` and then `libgdal.dylib`
-`RTLD_GLOBAL` before the first extension import. The preload is inert on Android and on a
-desktop.
+The delivery is the only iOS-specific part, and it is invisible from Python. flet moves each
+extension and each dylib into its own framework, rewrites the extensions' `@rpath` links to
+match, and leaves a `.fwork` marker in `opt/lib`. `fiona/__init__.py` also preloads
+`libproj.dylib` then `libgdal.dylib` `RTLD_GLOBAL` — from `opt/lib`, or through the marker —
+before the first extension import. The preload is inert on Android and on a desktop.
 
 ### Other considerations
 
@@ -275,9 +285,9 @@ in `supported_drivers`, 55 from `Env().drivers()` and a working `CRS.from_epsg(4
 Twelve of those 17, including `CSV`, `GML`, `GPKG`, `GPX`, `OpenFileGDB` and `SQLite`, are
 absent from the mobile registry. To approximate a device with no PROJ database — Android
 without an extracted `pyproj` — run with `GDAL_DATA`, `PROJ_DATA` and `PROJ_LIB` pointed at
-an empty directory; fiona leaves a `PROJ_DATA` you set alone. That proxy is worth trusting
-because it was checked: the device reproduced those numbers exactly. It will not show you
-the driver set.
+an empty directory; fiona leaves a `PROJ_DATA` you set alone. That proxy was checked against
+an arm64-v8a emulator with no database: the round-trip residuals under
+**Coordinate systems** matched it to every digit. It will not show you the driver set.
 
 Leave Flet's
 [compilation and cleanup](https://flet.dev/docs/publish/#compilation-and-cleanup) on.
@@ -385,8 +395,9 @@ share all of this; change one and re-check the other three.
   the only extension whose `DT_NEEDED` names `libc++_shared.so`; `libgdal.so` itself does
   not need it, because its undefined C++ symbols are covered by `libproj.so`'s statically
   linked libc++ and by bionic. So the `flet-libcpp-shared` entry buys exactly
-  `import fiona.transform`, and losing it costs exactly that one import — silently, because
-  every other test still passes.
+  `import fiona.transform`, and losing it costs exactly that one import: only the two tests
+  that import it, `test_transform_loads_and_reprojects` and
+  `test_epsg_codes_work_where_proj_db_reached_the_device`, go red.
 - **`serious_python`'s junk-file globs list `**.pxd` and not `**.pxi`**, so `fiona/gdal.pxi`
   (about 36 KB) ships to the device for nothing. That is a claim about another project's
   current source; recheck it before repeating it, and drop this note if the glob gains
@@ -398,7 +409,8 @@ share all of this; change one and re-check the other three.
 ### Re-verification checklist
 
 - **`Requires-Dist` in the built Android wheel** still names `flet-libcpp-shared`, and
-  `test_transform_loads_and_reprojects` still exists — it is the only test that would go red.
+  `test_transform_loads_and_reprojects` still exists — with the EPSG test, the only tests that
+  would go red.
 - **The linkage.** Android: `DT_NEEDED` still naming `libgdal.so` by bare soname,
   `libc++_shared.so` on `_transform` and nowhere else, `ogrext` still defining zero GDAL
   symbols, and 16 KB `PT_LOAD` alignment everywhere. iOS: still eight `MH_DYLIB`, each
@@ -433,5 +445,9 @@ share all of this; change one and re-check the other three.
   would read as a broken driver.
 - **Nothing covers whether an `Env()` option reaches `ogrext`.** The **iOS** section's claim
   that it does follows from the single linked image, not from a run.
-- **The `proj.db`-as-asset lever has never been run on a device.** It follows from the shim
-  leaving an existing `PROJ_DATA` alone, not from a run.
+- **`test_epsg_codes_work_where_proj_db_reached_the_device` passes on either branch.** A run
+  with the no-database branch made to fail confirmed the database branch on an iPhone
+  simulator and an Android emulator, the latter reading pyproj's extracted copy.
+- **The `proj.db`-as-asset lever has never been run on a device**, and neither has
+  `fiona._env.set_proj_data_search_path`. The first follows from the shim leaving an existing
+  `PROJ_DATA` alone, the second from a desktop run.

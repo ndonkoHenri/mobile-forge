@@ -8,8 +8,8 @@ a claim.
 
 The features are generated from a formula in `src/vectors.py`, written into
 [`FLET_APP_STORAGE_DATA`](https://flet.dev/docs/reference/environment-variables/#flet_app_storage_data)
-with an explicit `driver=`, and read straight back. It ships no data file, bundles no
-`proj.db` and reaches no network.
+with an explicit `driver=`, and read straight back. It ships no data file of its own and
+reaches no network.
 
 Every probe in `src/vectors.py` runs inside its own `try/except` and returns
 `type(err).__name__` and `str(err)` as a result line for `src/main.py` to render. That is
@@ -40,10 +40,11 @@ What it demonstrates:
   [`CRS.from_string("+proj=…")`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.crs.CRS.from_string)
   beside
   [`CRS.from_epsg(4326)`](https://fiona.readthedocs.io/en/stable/fiona.html#fiona.crs.CRS.from_epsg),
-  both run rather than described. With fiona as the only dependency the EPSG line resolves on
-  iOS and raises on Android, where the database arrives only inside an extracted
-  [`pyproj`](../../../pyproj). No CRS is passed to any layer, which keeps the driver question
-  separate from the database question.
+  both run rather than described. iOS reads `flet-libproj`'s database; Android reads the copy
+  inside [`pyproj`](../../../pyproj), which is why `pyproject.toml` lists `pyproj` under
+  `[tool.flet.android]` and extracts it with `extract_packages`. Drop either and the EPSG line
+  prints a `CRSError` on Android. No CRS is passed to any layer, which keeps the driver
+  question separate from the database question.
 - **That [`fiona.transform`](https://fiona.readthedocs.io/en/stable/fiona.html#module-fiona.transform)
   loads and computes.** It is the one extension `import fiona` does not load, and on Android
   the only one that needs `libc++_shared.so`. The card reprojects a point through it, so the

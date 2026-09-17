@@ -2,7 +2,7 @@
 name = "fiona-feature-roundtrip"
 version = "1.0.0"
 description = "Writes vector layers on device and compares the read-back against its source records."
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 dependencies = [
     "flet==0.86.5",
@@ -12,7 +12,8 @@ dependencies = [
 dev = ["flet-cli", "flet-desktop", "flet-web"]
 
 [tool.flet.android]
-dependencies = ["fiona==1.10.1"]
+dependencies = ["fiona==1.10.1", "pyproj==3.7.2"]
+extract_packages = ["pyproj"]
 
 [tool.flet.ios]
 dependencies = ["fiona==1.10.1"]
