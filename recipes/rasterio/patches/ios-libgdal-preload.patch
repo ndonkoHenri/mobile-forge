@@ -1,15 +1,16 @@
 Preload libproj + libgdal, and point PROJ at the database, before the extensions.
 
 flet-libgdal ships a shared libgdal.dylib for iOS which links the shared
-libproj.dylib, so gdal, fiona, rasterio, pyogrio and pyproj all resolve ONE GDAL
-and ONE PROJ. That single instance is what makes both halves of this patch work.
+libproj.dylib, so gdal, fiona, rasterio and pyogrio resolve ONE GDAL, and they
+and pyproj ONE PROJ.
 
-Delivery first: serious_python relocates each extension module into its own
-*.framework bundle, while the dylibs stay plain files in site-packages/opt/lib,
-and nothing on the relocated extensions' rpath points at them, so the first
-import would die with "Library not loaded: @rpath/libgdal.dylib". Loading them
-RTLD_GLOBAL in dependency order (libproj, then libgdal) makes dyld bind each
-@rpath reference by an already-loaded image's install-id.
+Delivery first. On iOS, flet moves each extension and each dylib into its own
+framework, rewrites the extensions' @rpath links to match, and leaves a
+<name>.fwork marker in site-packages/opt/lib holding the app-relative path. The
+shim preloads libproj, then libgdal, RTLD_GLOBAL before the first extension
+import -- from opt/lib/<name>.dylib, or from the framework binary the marker
+names -- so every extension binds the one loaded image. Whether flet's
+relocation resolves them without the preload is untested.
 
 Then PROJ_DATA, which is where the platforms diverge. On iOS flet-libproj's
 opt/share/proj is a real directory inside the app, so pointing PROJ at it makes
@@ -21,23 +22,19 @@ pyproj is absent. It has to be an environment variable set before the first
 import rather than an API call, because PROJ reads it when it creates its first
 context. An app that sets its own PROJ_DATA still wins.
 
-The preload half is inert on Android, where DT_NEEDED resolves the .so by
-basename out of jniLibs, and both halves are inert on a desktop.
+The preload is a no-op on Android, where DT_NEEDED resolves the .so by basename
+out of jniLibs, and on a desktop, where there is no opt/lib to find.
 
 --- a/rasterio/__init__.py
 +++ b/rasterio/__init__.py
-@@ -1,4 +1,95 @@
+@@ -1,5 +1,92 @@
  """Rasterio"""
-+
-+# mobile-forge (iOS): the extension modules below link libgdal, which itself links libproj, through @rpath,
-+# and flet relocates each of them into its own *.framework bundle while the
-+# dylibs ship as plain files in site-packages/opt/lib. Nothing on the
-+# extensions' rpath resolves that, so the first import otherwise dies with
-+# "Library not loaded: @rpath/lib....dylib". Preload them RTLD_GLOBAL first, in
-+# dependency order: once an image is loaded, dyld satisfies each @rpath
-+# reference by matching the already-loaded image's install-id. Where a flet
-+# build DID relocate one into a framework it leaves a "<name>.fwork" text
-+# marker holding the app-relative path, so follow that instead. No-op on
+ 
++# mobile-forge (iOS): the extensions below link libgdal, which links libproj,
++# through @rpath. flet moves each extension and each dylib into its own
++# framework and leaves a "<name>.fwork" marker holding the app-relative path.
++# Preload them RTLD_GLOBAL first, in dependency order, so every extension binds
++# the one loaded image, following the marker where flet left one. No-op on
 +# Android, where DT_NEEDED resolves the .so by basename out of jniLibs, and on
 +# desktop, where there is no opt/lib to find.
 +try:
@@ -119,6 +116,7 @@ basename out of jniLibs, and both halves are inert on a desktop.
 +                break
 +except Exception:
 +    pass
- 
++
  from collections import namedtuple
  from contextlib import ExitStack
+ import glob

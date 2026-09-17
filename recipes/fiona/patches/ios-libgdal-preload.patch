@@ -1,45 +1,42 @@
 Preload libproj + libgdal, and point PROJ at the database, before the extensions.
 
-flet-libgdal ships a shared libgdal.dylib for iOS which links the shared
-libproj.dylib, so gdal, fiona, rasterio, pyogrio and pyproj all resolve ONE GDAL
-and ONE PROJ. That single instance is what makes both halves of this patch work.
+flet-libgdal ships a shared libgdal.dylib for iOS which links flet-libproj's
+shared libproj.dylib, so gdal, fiona, rasterio and pyogrio resolve ONE GDAL,
+and they and pyproj resolve ONE PROJ.
 
-Delivery first: serious_python relocates each extension module into its own
-*.framework bundle, while the dylibs stay plain files in site-packages/opt/lib,
-and nothing on the relocated extensions' rpath points at them, so the first
-import would die with "Library not loaded: @rpath/libgdal.dylib". Loading them
-RTLD_GLOBAL in dependency order (libproj, then libgdal) makes dyld bind each
-@rpath reference by an already-loaded image's install-id.
+Delivery first: on iOS, flet moves each extension and each dylib into its own
+framework, rewrites the extensions' @rpath links to match, and leaves a
+<name>.fwork marker in opt/lib holding the app-relative path. The first added
+block preloads libproj, then libgdal, RTLD_GLOBAL -- from opt/lib, or through
+the marker -- before the first extension import, so every extension binds the
+one loaded image. Whether flet's relocation resolves them without it is
+untested.
 
 Then PROJ_DATA, which is where the platforms diverge. On iOS flet-libproj's
 opt/share/proj is a real directory inside the app, so pointing PROJ at it makes
-EPSG codes resolve for every consumer at once -- they share the instance. On
-Android that tree never reaches site-packages at all, so the database travels
-inside pyproj instead (extracted to disk by extract_packages); the shim finds it
-through find_spec, without importing pyproj, and falls through quietly when
-pyproj is absent. It has to be an environment variable set before the first
-import rather than an API call, because PROJ reads it when it creates its first
-context. An app that sets its own PROJ_DATA still wins.
+EPSG codes resolve for every GDAL consumer at once -- they share the instance.
+On Android that tree never reaches site-packages at all, so the database
+travels inside pyproj instead (extracted to disk by extract_packages); the shim
+finds it through find_spec, without importing pyproj, and falls through quietly
+when pyproj is absent. It is an environment variable because the shim runs
+before any extension exists to call, and fiona/env.py hands PROJ_DATA to PROJ
+as it loads. An app that sets its own PROJ_DATA still wins.
 
 The preload half is inert on Android, where DT_NEEDED resolves the .so by
-basename out of jniLibs, and both halves are inert on a desktop.
+basename out of jniLibs, and on a desktop, where there is no opt/lib.
 
 --- a/fiona/__init__.py
 +++ b/fiona/__init__.py
-@@ -19,6 +19,97 @@
+@@ -19,6 +19,93 @@
  features. One opened in a writing mode provides a ``write`` method.
  
  """
 +
-+# mobile-forge (iOS): the extension modules below link libgdal, which itself links libproj, through @rpath,
-+# and flet relocates each of them into its own *.framework bundle while the
-+# dylibs ship as plain files in site-packages/opt/lib. Nothing on the
-+# extensions' rpath resolves that, so the first import otherwise dies with
-+# "Library not loaded: @rpath/lib....dylib". Preload them RTLD_GLOBAL first, in
-+# dependency order: once an image is loaded, dyld satisfies each @rpath
-+# reference by matching the already-loaded image's install-id. Where a flet
-+# build DID relocate one into a framework it leaves a "<name>.fwork" text
-+# marker holding the app-relative path, so follow that instead. No-op on
++# mobile-forge (iOS): the extensions below link libgdal, which links libproj,
++# through @rpath. flet moves each extension and each dylib into its own
++# framework and leaves a "<name>.fwork" marker holding the app-relative path.
++# Preload them RTLD_GLOBAL first, in dependency order, so every extension binds
++# the one loaded image, following the marker where flet left one. No-op on
 +# Android, where DT_NEEDED resolves the .so by basename out of jniLibs, and on
 +# desktop, where there is no opt/lib to find.
 +try:
@@ -77,8 +74,8 @@ basename out of jniLibs, and both halves are inert on a desktop.
 +    pass
 +
 +# mobile-forge: point PROJ at whichever database reached this device, so EPSG
-+# codes resolve. PROJ reads PROJ_DATA when it creates its first context, which
-+# is why this runs before any extension import rather than through an API call.
++# codes resolve. fiona/env.py hands PROJ_DATA to PROJ as it loads, which is why
++# this runs before any extension import rather than through an API call.
 +# Only set when the app has not chosen its own, so an explicit PROJ_DATA or a
 +# bundled asset still wins.
 +#

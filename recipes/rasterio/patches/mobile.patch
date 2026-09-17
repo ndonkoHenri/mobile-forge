@@ -42,7 +42,7 @@ the build machine's GDAL.
 The commit that introduced the patch (ec8d184, a bulk consolidation of many
 branches) records no per-patch rationale; the reading above comes from the
 diff, rasterio 1.5.0's setup.py, and this recipe's `script_env` block, which
-sets exactly these three variables.
+sets all three.
 
 diff --git a/setup.py b/setup.py
 --- a/setup.py

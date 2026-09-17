@@ -3,9 +3,12 @@ package:
   version: "3.7.2"
 
 build:
-  # iOS links flet-libproj's SHARED libproj, the image libgdal links too. A
-  # static one would give each of pyproj's eight PROJ-using extensions its own
-  # proj.db search path, so set_data_dir() would configure one of eight.
+  # iOS links the shared libproj: one PROJ for pyproj and every GDAL consumer in
+  # the app. A static one would give each of pyproj's eight PROJ-using
+  # extensions its own proj.db search path, so set_data_dir() would configure
+  # one of eight. The preload shim loads libproj RTLD_GLOBAL before the first
+  # extension import; whether flet's framework relocation resolves it without
+  # the shim is unverified.
   number: 2
   script_env:
     PROJ_VERSION: 9.5.0

@@ -44,7 +44,7 @@ against whatever GDAL the build machine happens to have.
 The commit that introduced the patch (ec8d184, a bulk consolidation of many
 branches) records no per-patch rationale. The account above is read off the
 diff, fiona 1.10.1's own setup.py, and this recipe's `script_env` block,
-which sets exactly these three variables and nothing else.
+which sets these three variables, plus `GDAL_VERSION` and, on iOS, `LDFLAGS`.
 
 diff --git a/setup.py b/setup.py
 index e1f48a6..6c04d39 100644

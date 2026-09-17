@@ -11,9 +11,10 @@ paths when nothing else supplied them) and `cflags`.
 None of that survives a cross build. `recipes/flet-libgdal/build.sh` ends
 with `rm -rf $PREFIX/{bin,share}`, so the flet-libgdal wheel ships headers
 and libraries under `{platlib}/opt` and no `gdal-config`; `fetch_config`
-raises `gdal_config_error`, and `finalize_options` turns that into
+raises `gdal_config_error`, which `get_gdal_config` re-raises with
 "Could not find gdal-config. Make sure you have installed the GDAL native
-library and development headers." (The `version` call is wrapped in its own
+library and development headers.", failing `finalize_options` at its
+`prefix` call. (The `version` call is wrapped in its own
 `except gdal_config_error: pass`, so a missing config tool silently skips
 the bindings-vs-library version guard as well.) Should the build host happen
 to carry a Homebrew or system `gdal-config`, the call succeeds instead and
@@ -43,7 +44,7 @@ recipe's `script_env`, which exists only to feed it.
 
 --- a/setup.py
 +++ b/setup.py
-@@ -240,6 +240,9 @@
+@@ -241,6 +241,9 @@
 
      def get_gdal_config(self, option):
          try:

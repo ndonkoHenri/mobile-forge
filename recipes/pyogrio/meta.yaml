@@ -8,9 +8,9 @@ requirements:
 
 build:
   # iOS links the shared libgdal/libproj pair: one GDAL and one PROJ for every
-  # consumer in the app. The preload shim exists because the extensions link the
-  # dylibs through @rpath and nothing on their rpath resolves those once flet
-  # relocates them into frameworks.
+  # consumer in the app. The preload shim loads both RTLD_GLOBAL before the first
+  # extension import; whether flet's framework relocation resolves them without it
+  # is untested.
   number: 2
   script_env:
     GDAL_VERSION: 3.13.1

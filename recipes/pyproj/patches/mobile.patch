@@ -8,9 +8,9 @@ version probe that would otherwise execute `$PROJ_DIR/bin/proj` (a target
 binary the macOS build host cannot run, and one `flet-libproj`'s build.sh
 deletes anyway with `rm -rf $PREFIX/{bin,share}`). Its default
 `libraries = ["proj"]` is right on both platforms, because libproj is a shared
-library that resolves its own dependencies. So this recipe needs only
-`PROJ_DIR: {platlib}/opt` and `PROJ_VERSION: 9.5.0` in `script_env`, and the
-one gap below.
+library that resolves its own dependencies. So to find and link PROJ this
+recipe needs only `PROJ_DIR: {platlib}/opt` and `PROJ_VERSION: 9.5.0` in
+`script_env`, and the one gap below.
 
 `ext_options["runtime_library_dirs"]` is set to `library_dirs` on everything
 except Windows and cygwin. That asks distutils for a runtime search path, and
@@ -26,12 +26,13 @@ fallbacks at the bottom of that function: `-Wl,-R<dir>`, or
 ld. Apple's ld64 takes neither spelling. Adding `ios` to the exclusion makes
 `runtime_library_dirs` `None` on those slices.
 
-A build-host search path would be wrong on iOS anyway: serious_python relocates
-libproj.dylib into a framework, and the package's preload shim loads it from
-there. Android is deliberately left alone: `sys.platform` there is `"android"`,
-so it takes the same fallback branch, but the NDK's lld does accept `-R` (its
-GNU alias for `-rpath`), and the resulting build-host RUNPATH is simply ignored
-by the Android loader, which resolves from the APK's `lib/`.
+A build-host search path would be wrong on iOS anyway: serious_python moves
+each extension and libproj.dylib into its own framework and rewrites the
+extensions' @rpath links to match. Android is deliberately left alone:
+`sys.platform` there is `"android"`, so it takes the same fallback branch, but
+the NDK's lld does accept `-R` (its GNU alias for `-rpath`), and the resulting
+build-host RUNPATH is simply ignored by the Android loader, which resolves from
+the APK's `lib/`.
 
 The hunk arrived in the bulk consolidation commit ec8d184, which records no
 per-patch reason and no linker diagnostic; the mechanism described above is
@@ -40,7 +41,7 @@ captured build log, so the exact error text that motivated it is not known.
 
 --- a/setup.py
 +++ b/setup.py
-@@ -194,7 +194,9 @@ def get_extension_modules():
+@@ -195,7 +195,9 @@ def get_extension_modules():
          "include_dirs": include_dirs,
          "library_dirs": library_dirs,
          "runtime_library_dirs": (
