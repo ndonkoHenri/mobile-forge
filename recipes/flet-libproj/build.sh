@@ -23,6 +23,11 @@ fi
 # configured --with-openssl, hence ssl/crypto and psl. sqlite3 and z are iOS
 # system libraries and resolve from the SDK. Ordered by dependency, since these
 # are static archives. Consumers then link -lproj alone.
+#
+# PROJ is C++, and CMake seeds only CMAKE_C_FLAGS from the environment, so
+# CFLAGS (which carries the iOS deployment target) is passed to C++ explicitly,
+# as recipes/flet-libgdal does. Without it the dylib links for the toolchain's
+# default minimum and the x86_64 simulator slice is stamped as a device binary.
 IOS_PROJ_LINK_LIBS="-L$PLATLIB/opt/lib -ltiff -ljpeg -lcurl -lssl -lcrypto -lpsl -lsqlite3 -lz"
 
 if [ $CROSS_VENV_SDK == "android" ]; then
@@ -34,6 +39,7 @@ if [ $CROSS_VENV_SDK == "android" ]; then
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS" \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+        -DBUILD_APPS=OFF \
         -DBUILD_TESTING=0 \
         -DTIFF_LIBRARY="$PLATLIB/opt/lib/libtiff.so" \
         -DTIFF_INCLUDE_DIR="$PLATLIB/opt/include" \
@@ -49,7 +55,9 @@ else
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=$PREFIX \
         -DBUILD_SHARED_LIBS=ON \
+        -DCMAKE_CXX_FLAGS="$CFLAGS" \
         -DCMAKE_SHARED_LINKER_FLAGS="$IOS_PROJ_LINK_LIBS" \
+        -DBUILD_APPS=OFF \
         -DBUILD_TESTING=0 \
         -DTIFF_LIBRARY="$PLATLIB/opt/lib/libtiff.a" \
         -DTIFF_INCLUDE_DIR="$PLATLIB/opt/include" \
@@ -88,9 +96,9 @@ if [ $CROSS_VENV_SDK != "android" ]; then
 fi
 
 # Keep share/proj/proj.db -- PROJ's CRS database, the file that makes EPSG codes
-# resolve. Everything else under share/ (and all of bin/) goes: the init files,
-# JSON schemas and proj.ini are unused without the grids they reference, and
-# get_data_dir() looks for proj.db alone.
+# resolve. Everything else under share/ goes: the init files, JSON schemas and
+# proj.ini are unused without the grids they reference, and get_data_dir() looks
+# for proj.db alone.
 _projdb="$PREFIX/share/proj/proj.db"
 if [ -f "$_projdb" ]; then
     _keep="$(mktemp -d)"

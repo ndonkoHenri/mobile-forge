@@ -13,10 +13,6 @@ build:
   # `set_data_dir()` would configure one of eight in pyproj. Shared also lets
   # libgdal and pyproj share a single PROJ.
   number: 11
-# {% if sdk != 'android' %}
-  script_env:
-    LDFLAGS: '-undefined dynamic_lookup'
-# {% endif %}
 
 requirements:
   build:
