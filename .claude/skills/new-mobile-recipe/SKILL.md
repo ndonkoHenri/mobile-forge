@@ -78,12 +78,47 @@ Match the package to one of these shapes. Each maps to a template in `templates/
 | C-ext consuming an existing flet-lib       | Already-built `flet-libX` covers the C dep (libxml2, libcurl, libssl via openssl, etc.)                 | Adapt `templates/meta-with-patches.yaml` + add `requirements.host` |
 | Native library itself (flet-lib*), **static** | New C library a Python C-extension links at build time (libxml2, libcurl, libgeos…)                  | `templates/meta-flet-lib.yaml` + `templates/build-flet-lib.sh`     |
 | Native library, **ctypes-loaded (shared)** | A pure-Python wrapper `dlopen`s the lib at runtime via `ctypes` (pyzbar→libzbar, python-magic→libmagic) | `templates/meta-flet-lib.yaml` + `templates/build-flet-lib-shared.sh`; see Pattern H |
+| Native library, **cffi-loaded (shared)** | Same, but the wrapper is **cffi ABI mode** (`ffibuilder.set_source(name, None)` → `ffi.dlopen`, no compiled extension anywhere) (soundfile→libsndfile) | As Pattern H, plus a loader patch that resolves through ctypes — `ffi.dlopen` is a raw `dlopen(3)` and cannot follow an iOS `.fwork`; copy `recipes/soundfile/` |
 | Cython-accelerated pure-Python (poetry-core build script) | `build-backend = "poetry.core.masonry.api"` + `[tool.poetry.build] script` that cythonizes the runtime `.py` files themselves (zeroconf; the Home-Assistant-ecosystem idiom). Forge's PEP 517 path handles poetry-core unchanged | No template — copy `recipes/zeroconf/` (branch `zeroconf`): `script_env REQUIRE_CYTHON: "1"` + a fail-loud patch (upstream swallows compile errors → silent pure-py wheel), test asserts the modules are real extensions |
 | C-ext that links a lib via a `*-config` tool | Compiled C-ext whose `setup.py` shells out to `pg_config`/`mysql_config`/… (psycopg2→libpq, mysqlclient→libmysqlclient) | A **static+PIC** `flet-lib*` (`build-flet-lib.sh` + `-fPIC`) shipping a config-shim, + consumer `script_env`/patch; see Pattern I |
+| **setup.py that drives CMake itself** for a vendored native lib | An sdist that vendors a C library and builds it with its own `subprocess` CMake call inside `build_ext`, then links the static result via `extra_objects` (pycares→c-ares). Not scikit-build-core — the arg list is hardcoded in `setup.py` | No template — copy `recipes/pycares/`: one patch appends `shlex.split(os.environ['FORGE_CMAKE_ARGS'])` to the arg list, `requirements.build: [cmake]`; see "vendored-CMake" deep-dive below |
 | CMake giant, **no sdist AND no setup.py/pyproject.toml** | Upstream's only wheel path is a host==target build script (onnxruntime's `ci_build/build.py`, TF's `build_pip_package_with_cmake.sh`) | No template — copy from `recipes/onnxruntime/` or `recipes/tflite-runtime/` (branches `machine/onnxruntime` / `machine/tflite-runtime`); see "PEP 517 shim" deep-dive below |
+| C-ext linking a `flet-lib*`'s **shared** libs via `pkg-config` | Upstream's `setup.py` runs `pkg-config --cflags --libs …` and the package has too many extension modules to static-link into (PyAV: 49) | No template — copy `recipes/flet-libffmpeg/` + `recipes/av/`: the flet-lib ships SHARED libs plus **relocatable** `.pc` files (forge already has `opt/lib/pkgconfig` on `PKG_CONFIG_LIBDIR`, so the consumer needs no `script_env` for it), and the consumer adds `-Wl,-headerpad_max_install_names` on iOS. See "Cross-cutting conventions" in `references/recipe-patterns.md` |
 | **Prebuilt-repackage + host_build chain**  | Upstream publishes official prebuilt mobile archives of the native lib AND the consumer's own cmake links + re-ships the `.so` (flet-libonnxruntime→sherpa-onnx) | `build.sh` repackager + consumer `requirements.host_build`; copy from `recipes/flet-libonnxruntime/` + `recipes/sherpa-onnx/` (branch `machine/sherpa-onnx`); see "prebuilt-repackage" deep-dive below |
+| **cffi/ctypes consumer of a prebuilt archive** | The package's own build DOWNLOADS a prebuilt static lib keyed by the build host's `uname` and statically links it (curl-cffi → curl-impersonate); breaks under cross because host≠target | `flet-lib*` prebuilt-repackage dep (`source.strip: 0` for root-level tarballs) + `requirements.host_build` + a `mobile.patch` opt-in env lever that steers arch/link off the forge target; copy from `recipes/flet-libcurl-impersonate/` + `recipes/curl-cffi/` (branch `curl-cffi`); see deep-dive below |
 
 If unsure, start with **minimal C-extension** and let the build tell you what's missing. Iterate up the table as failures surface.
+
+### Shape deep-dive: setup.py that drives CMake for a vendored lib (pycares)
+
+**When:** the sdist vendors a C library (`deps/<lib>/`) and its `build_ext` shells out to
+`cmake` to build it, then links the resulting static lib into the extension with
+`extra_objects`. It looks like a CMake recipe but no CMake build backend is involved, so
+`CMAKE_ARGS` (which only scikit-build-core reads) does nothing — the argument list is a
+literal in `setup.py`, configured for the build host.
+
+The whole recipe is one patch that makes that list extensible, plus the env var to fill it:
+
+```python
+cmake_args.extend(shlex.split(os.environ.get('FORGE_CMAKE_ARGS', '')))
+```
+
+Append it **after** upstream's own platform block so the recipe's args win — repeated `-D`
+on a cmake command line is last-one-wins, which is how `-DCMAKE_OSX_DEPLOYMENT_TARGET`
+gets overridden without touching upstream's line. Then the usual per-SDK `script_env`
+lanes (`{NDK_ROOT}/build/cmake/android.toolchain.cmake` + `{ANDROID_ABI}` +
+`{ANDROID_API_LEVEL}` on Android; `-DCMAKE_SYSTEM_NAME=iOS` + `{{ sdk }}` / `{{ arch }}` /
+`{{ sdk_version }}` on iOS), and `requirements.build: [cmake]`.
+
+**Why this shape is worth naming: getting it wrong produces a green wheel.** A host-configured
+vendored lib still *links* whenever host and target arch agree (macOS arm64 objects go into an
+`ios_arm64` extension without complaint), and the resulting wheel then fails on device — or
+worse, works while quietly missing a feature the configure step probed for. Verify from the
+build log, not the exit code: `Check for working C compiler:` must name the cross compiler,
+and the feature macros that matter must have resolved for the target (for pycares:
+`HAVE___SYSTEM_PROPERTY_GET` on Android, `Found Threads: TRUE` on both — a threadless c-ares
+makes `import pycares` raise outright). Grep the generated `ares_config.h`-equivalent in
+`build/<py>/<pkg>/<ver>/build/temp.*/` when in doubt.
 
 ### Shape deep-dive: PEP 517 shim for no-sdist CMake giants (onnxruntime, tflite-runtime)
 
@@ -96,7 +131,7 @@ The shim's load-bearing rules (each one bought with a failed build):
 - **Stage the python package fresh on every hook** (overlay / rm+copy from the current slice's build dir into the source root) so the current slice always wins.
 - Prefer **`-D<pkg>_BUILD_SHARED_LIB=OFF` → one statically-linked pybind module**: no ctypes/dylib gate, and it is exactly the wheel shape that works on BOTH platforms today (onnxruntime's Android design turned out to BE the iOS wheel shape; pywhispercpp/ncnn are the same shape).
 - CMake args ride in a recipe `script_env` var (`FORGE_CMAKE_ARGS`) that the shim `shlex.split`s. **Multi-token `-D` values cannot ride inside it** — give linker-flag strings their own env var and let the shim assemble the single `-D` argument (tflite's `FORGE_SHARED_LINKER_FLAGS: -Wl,-z,max-page-size=16384 -L{HOST_PYTHON_HOME}/lib -lpython{py_version_short}`).
-- **Trap — `setup.py` platform predicates:** under the crossenv `platform.system()` returns `"Android"` / `"iOS"`, which may match NO upstream branch → the libs list stays unset and the wheel silently ships **without the pybind `.so`** (onnxruntime extends upstream's predicate to `("Linux", "AIX", "Android", "iOS")`; the Darwin branch stays intact for real macOS builds).
+- **Trap — `setup.py` platform predicates:** under the crossenv `platform.system()` returns `"Android"` / `"iOS"`, which may match NO upstream branch → the libs list stays unset and the wheel silently ships **without the pybind `.so`** (onnxruntime extends upstream's predicate to `("Linux", "AIX", "Android", "iOS")`; the Darwin branch stays intact for real macOS builds). `sys.platform` is the same story one layer down — crossenv sets it to `"android"` / `"ios"` (from the sysconfigdata's `_PYTHON_HOST_PLATFORM`), so `sys.platform.startswith('linux')` and `== 'darwin'` are both False. **Matching nothing is sometimes exactly right**: it is what keeps `-lrt` (no librt in bionic) and a macOS deployment target out of the pycares build, which is why that recipe needs no platform patch at all. Read the branches before assuming you must extend them.
 
 **Real examples:** `machine/onnxruntime:recipes/onnxruntime/` and `machine/tflite-runtime:recipes/tflite-runtime/` — read via `git show <branch>:<path>` if not on those branches. Both are ONE `mobile.patch` (description as text preamble above the first `---` header, per repo convention).
 
@@ -111,6 +146,50 @@ The shim's load-bearing rules (each one bought with a failed build):
 **CI consequence:** this is a chain recipe — plain push strands it; see "CI: push vs dispatch" in Phase 8.
 
 **Real example:** `machine/sherpa-onnx:recipes/flet-libonnxruntime/` + `machine/sherpa-onnx:recipes/sherpa-onnx/` (patches `android-no-jni.patch` + `android-preload-ort.patch`).
+
+### Shape deep-dive: cffi/ctypes consumer that self-detects arch + downloads a prebuilt archive (curl-cffi → flet-libcurl-impersonate)
+
+**When:** the Python package's own build **downloads a prebuilt static lib keyed by the build host's `platform.uname()`** and statically links it (curl-cffi's `scripts/build.py` matches `uname` against a `libs.json`, downloads `libcurl-impersonate-v{ver}.{arch}-{sysname}.tar.gz`, and `--whole-archive`/`-force_load`s it into a cffi extension). This CANNOT work unpatched under forge: the build host (macOS/Linux) is never the wheel's target, so `uname`-based arch selection and any host-`platform.system()`-driven link recipe are wrong for every slice.
+
+The shape that works — a `flet-lib*` prebuilt-repackage dep + a small opt-in patch:
+
+1. **A `flet-lib*` recipe stages the prebuilt archive per slice** via `source.url` (one tarball per `(sdk, arch)` — Jinja-map `arm64-v8a`→`aarch64` etc.) into `$PREFIX` (=`wheel/opt`), so the consumer sees `{platlib}/opt/`. **`source.strip: 0`** when the tarball's files sit at the archive **root** with no wrapper dir (a prebuilt `.a` beside an `include/` — forge's default `strip=1` splits `path.split("/",1)[1]` and IndexError-**drops** every root-level file, keeping only `include/…`→`…`; verify empirically, it fails silently otherwise). Each upstream tarball is usually already thin per-slice → no `lipo`. `excluded_arches` any slice with no upstream binary (curl-impersonate has no `armeabi-v7a`).
+2. **The consumer declares it `requirements.host_build`** and points the package's own "where's the lib" env var at it (`IMPERSONATE_BUILD_DIR: '{platlib}/opt'`) so the package's **download is skipped** (the `.a` already exists there) — fully offline, and no CI `tmplibdir`-reuse arch leak.
+3. **A minimal `mobile.patch` adds ONE opt-in lever** (an env var the recipe's `script_env` sets, e.g. `IMPERSONATE_FORGE_TARGET: ios|android`) that (a) makes the arch-detect return a synthesized target entry instead of scanning `uname`, and (b) forces the target's static-link recipe (Apple `-force_load`+`-lc++` for iOS, ELF `--whole-archive`+`-lc++` for Android — the Android branch is the one the macOS host gets wrong). Guard it so upstream behaviour is unchanged when the var is unset. **iOS extra:** a static archive built with Apple SecTrust / Apple IDN needs the consuming extension to link `-framework Security -framework CoreFoundation -liconv -licucore` (see `forge-error-catalogue` § iOS undefined `_SecTrust*`/`_iconv`/`_uidna_*`).
+
+**Real example:** branch `curl-cffi` — `recipes/flet-libcurl-impersonate/` (build.sh, `source.strip: 0`) + `recipes/curl-cffi/` (`patches/mobile.patch`, 3 hunks). World-first curl-cffi iOS wheels; on-device 4/4 both platforms, and a real impersonated HTTPS request returns 200 on each. Needed one forge-core change: exposing `source.strip` in `src/forge/schema/meta-schema.yaml` (the code already honored it).
+
+### Shape deep-dive: cffi ABI-mode wrapper of a shared flet-lib (soundfile -> libsndfile)
+
+**When:** the package has **no compiled extension at all** — `soundfile_build.py` does
+`ffibuilder.set_source("_soundfile", None)`, so cffi emits a pure-Python `_soundfile.py`
+and the library is reached entirely through `ffi.dlopen(...)`. PyPI ships a
+`py2.py3-none-any` wheel plus platform wheels that differ only by a bundled `.so`.
+
+It looks like Pattern H and mostly is, with three differences that each cost a cycle:
+
+1. **`ffi.dlopen` is a raw `dlopen(3)`.** It cannot dereference the iOS `.fwork` stub —
+   that lives only in iOS CPython's patched `ctypes/__init__.py`. Resolve through ctypes
+   and hand cffi `CDLL(candidate)._name`. Full mechanism and patch shape in the
+   `forge-error-catalogue`, "A **cffi** ABI-mode wrapper cannot open a `flet-lib*` on iOS".
+2. **A recipe is still required even though nothing compiles**, because the loader's
+   `sys.platform` dispatch (darwin/win32/linux) ends in a bare `raise` on `android`/`ios`.
+   forge's `fix_wheel` retags the pure wheel `cp3XX-cp3XX-<platform>`, which is what makes
+   the patched copy outrank PyPI's `any` wheel at the same version — do not "fix" upstream's
+   own tagging in a patch.
+3. **Build it for the Python `flet build` actually bundles.** A cp312-only wheel loses to
+   PyPI's `py2.py3-none-any` on a 3.14 app with no resolution error at all; the tell is the
+   app's staged `METADATA` missing the `flet-lib*` `Requires-Dist`. See `local-recipe-testing`.
+
+**Optional sub-libraries:** where the native library has them (libsndfile's
+FLAC/Ogg/Vorbis/Opus/mpg123/LAME), build each as a **static PIC** `flet-lib*` and declare
+them `requirements.host_build` of the shared one, which absorbs them into a single `.so`.
+`host` would promote six wheels into every consuming app whose contents already ride inside
+that `.so`. Restrict the iOS export list to the public prefix
+(`-Wl,-exported_symbol,'_sf_*'`) so the absorbed symbols stay hidden the way libsndfile's
+own version script already keeps them on Android — jniLibs is a flat namespace shared with
+every other native wheel. And keep `-Wl,-headerpad_max_install_names` on any hand-linked
+iOS shared image: CMake adds it automatically, a hand `$CC -shared` does not.
 
 ### Naming
 
@@ -273,7 +352,14 @@ accompany the binary, forge now bundles one automatically: any top-level
 copied into `.dist-info/licenses/` and listed as `License-File`. That covers almost every
 upstream unchanged — so usually you write nothing.
 
-Three cases need a line in `meta.yaml`:
+**When upstream ships no notice at all** — the usual case for a prebuilt-binary
+repackage — put one file per bundled project in `recipes/<name>/licenses/`. Everything in
+that folder ships, under any name, and the folder name is stripped from the destination.
+Prefer it over a `license_file` list and over loose files in the recipe root: the folder
+IS the list, so it cannot go stale on a bump, and the recipe root stays readable.
+Precedent: `recipes/flet-libcurl-impersonate/licenses/` (nine notices, no list).
+
+Three cases still need a line in `meta.yaml`:
 
 - **The notice is not at the top level, or is named something else** — point at it:
   ```yaml

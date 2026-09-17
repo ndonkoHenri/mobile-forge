@@ -648,6 +648,95 @@ see the `forge-ci` skill.
 
 ## Cross-cutting conventions
 
+### `host` vs `host_build` is a PER-PLATFORM question
+
+`host` promotes the dep to a runtime `Requires-Dist`, so every consuming app installs that
+wheel. `host_build` puts it in the cross env for the link and leaves the metadata alone. Both
+install into the SAME `opt/` tree, so header/lib probing is identical either way — the only
+difference is the wheel's metadata.
+
+**The test is the payload, not the recipe, and the answer usually differs per SDK:**
+
+| `opt/lib` holds | verdict |
+| --- | --- |
+| `.a` only | `host_build` — absorbed at link time, unloadable at runtime |
+| `.so` / `.dylib` | `host` — a real runtime dep; flet stages it into jniLibs |
+| both | `host`, and delete the dead `.a` in build.sh |
+
+Most `flet-lib*` build **shared on Android and static on iOS**, so the same lib needs both. Guard
+the KEY, not the list item:
+
+```yaml
+requirements:
+# {% if sdk == 'android' %}
+  host:
+    - flet-libjpeg 3.0.90
+# {% else %}
+  host_build:
+    - flet-libjpeg 3.0.90
+# {% endif %}
+```
+
+Confirm before moving anything, per platform:
+
+```bash
+llvm-readelf -d <ext>.so | grep NEEDED        # android: lib listed => runtime => host
+nm -u <ext>.so | grep -ci <libsym>            # ios: 0 undefined => absorbed => host_build
+```
+
+An audit that checks only Android will clear libs that are archives-only on iOS — that mistake
+is already recorded in AGENTS.md's sweep, which cleared flet-libjpeg/libxml2/libgeos/libfreetype
+as "runtime .so payloads". True there, false on iOS. `pillow` (all three of its libs), `pymssql`
+and `scipy` are the fixed precedents.
+
+Getting it wrong the safe way costs a download; getting it wrong the unsafe way — moving a lib
+something actually `dlopen`s — is a runtime crash on device, so verify per consumer.
+
+### A `flet-lib*` consumed through `pkg-config` needs relocatable `.pc` files
+
+forge already puts `<cross site-packages>/opt/lib/pkgconfig` on both `PKG_CONFIG_PATH`
+and `PKG_CONFIG_LIBDIR` (`compile_env()` in `build.py`), so a consumer whose `setup.py`
+shells out to `pkg-config` needs **no `script_env` at all** — provided the `flet-lib*`
+ships its `.pc` files and they are relocatable. Most build systems bake absolute paths
+from the staging prefix into all three of `prefix=`, `libdir=` and `includedir=`
+(FFmpeg writes the latter two out in full rather than deriving them), and that prefix
+no longer exists when the wheel is unpacked. Rewrite them in `build.sh`:
+
+```bash
+for pc in "$PREFIX"/lib/pkgconfig/*.pc; do
+    sed -E -e 's|^prefix=.*|prefix=${pcfiledir}/../..|' \
+           -e 's|^libdir=.*|libdir=${prefix}/lib|' \
+           -e 's|^includedir=.*|includedir=${prefix}/include|' \
+           "$pc" > "$pc.tmp" && mv "$pc.tmp" "$pc"
+done
+```
+
+Note this contradicts the usual `flet-lib*` cleanup advice to delete `lib/pkgconfig` —
+delete it only when nothing downstream reads it. **Real example:**
+`recipes/flet-libffmpeg/` → `recipes/av/`.
+
+### iOS: extensions binding several bundled dylibs need `-Wl,-headerpad_max_install_names`
+
+serious_python relocates every bundled dylib into a framework and rewrites each
+`@rpath/lib<X>.dylib` reference to the much longer
+`@rpath/opt.lib.lib<X>.framework/opt.lib.lib<X>`. `install_name_tool` cannot grow a
+load command that has no padding, and the resulting failure aborts the sync **while
+`flet build` still reports success** — see the `forge-error-catalogue` skill for the
+full symptom. CMake adds the flag itself on Apple platforms; setuptools and plain
+`configure` do not, so pass it explicitly on the iOS lanes:
+
+```yaml
+build:
+# {% if sdk != 'android' %}
+  script_env:
+    LDFLAGS: -Wl,-headerpad_max_install_names
+# {% endif %}
+```
+
+and, for the `flet-lib*` underneath, in whatever the upstream build calls its link
+flags (`--extra-ldflags` for FFmpeg). **Real example:** `recipes/av/` +
+`recipes/flet-libffmpeg/`.
+
 ### Version specifiers in requirements
 
 Forge parses `requirements.host` / `requirements.build` strings per `build.py:67-78`:
@@ -689,7 +778,9 @@ So:
 
 Integer in `build:`, schema default **1** (`src/forge/schema/meta-schema.yaml`) — and `1` is the repo convention (start every new recipe there). Bump when the recipe itself changes but the upstream version doesn't — pip prefers higher build numbers for the same version, and the new build gets a distinct filename (`<pkg>-<ver>-N-<tag>.whl`). Important for forcing redeploys when patching.
 
-Don't write `number: 0`: forge only passes `--build-number` when the value is truthy (`build.py`), so `0` produces a wheel with NO build tag — losing the ability to supersede it later without a version bump.
+Don't write `number: 0`: forge only passes `--build-number` when the value is truthy (`build.py`), so `0` produces a wheel with NO build tag — losing the ability to supersede it later without a version bump. It also forfeits a **PEP 427 tie-break you may be relying on**: pypi.flet.dev is an *extra* index, not a replacement, so where upstream publishes its own mobile wheel at the same version (curl-cffi ships `cp313`/`cp314` `android_24_arm64_v8a` on PyPI), an untagged forge wheel is competing with one hand tied. **CI cannot catch any of this** — the mobile test rewrites local wheels' build tag to `9999` before installing, so a `number: 0` recipe still goes green. Only the filename in `dist/` tells you.
+
+On an upstream **version** bump, reset `number` to 1 rather than carrying the old value forward.
 
 ### Source layout
 

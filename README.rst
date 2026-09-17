@@ -138,6 +138,12 @@ Inside the recipe directory, add the following files.
   line, saying what the patch changes and why it is needed. ``patch(1)`` ignores everything
   before the first ``---``, so this is safe, and it means the explanation travels with the
   patch instead of living in a README that will drift from it.
+* Optionally, a folder named ``licenses``. Every file in it is copied into the wheel's
+  ``.dist-info/licenses/`` under its own name, and the folder name is not part of that
+  destination. Use it when the upstream archive ships no licence text of its own — a
+  prebuilt binary release, usually — and the recipe has to supply one notice per bundled
+  project. A licence-shaped file at the top level of the source or recipe directory is
+  picked up without this, so most recipes need neither.
 * For non-Python packages, a ``build.sh`` script. This is the script that will be executed
   in the build environment build the package. This script should invoke any ``configure``,
   ``make``, or any other compilation steps needed to build the package. This script will be
