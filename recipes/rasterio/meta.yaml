@@ -13,11 +13,10 @@ requirements:
 # {% endif %}
 
 build:
-  # 12 moves iOS onto the shared libgdal/libproj pair. One image means one
-  # driver registry, so ios-driver-registry.patch is gone -- including its
-  # rasterio.shutil hunk. A preload shim replaces it, because the extensions
-  # link the dylibs through @rpath and nothing on their rpath resolves those
-  # once flet has relocated them.
+  # iOS links the shared libgdal/libproj pair: one GDAL and one PROJ for every
+  # consumer in the app. The preload shim exists because the extensions link the
+  # dylibs through @rpath and nothing on their rpath resolves those once flet
+  # relocates them into frameworks.
   number: 12
   script_env:
     GDAL_VERSION: 3.13.1
@@ -25,23 +24,14 @@ build:
     # GDAL_LIBRARY_PATH and takes one directory. Easy to copy the wrong one.
     GDAL_LIB_PATH: '{platlib}/opt/lib'
     GDAL_INCLUDE_PATH: '{platlib}/opt/include'
-# {% if sdk == 'android' %}
     GDAL_LIBS: gdal
-# {% else %}
-    # libgdal is a real shared library on iOS now, and it resolves its own
-    # dependency tree (proj, tiff, jpeg, curl, ssl, crypto, psl) internally, so
-    # naming that chain here would be linking it a second time -- once per
-    # extension, which is what this used to do.
-    GDAL_LIBS: gdal
-    # NOT `-undefined dynamic_lookup`: that suppressed the link errors this
-    # chain used to produce, and with a real dylib an unresolved symbol is a
-    # genuine defect that must fail here rather than at dlopen on a device.
-    # The headerpad is required: serious_python rewrites each extension's
-    # dependency from `@rpath/libgdal.dylib` to the much longer
-    # `@rpath/opt.lib.libgdal.framework/opt.lib.libgdal`, and setuptools links
-    # with no padding, so install_name_tool fails, the relocation pass aborts,
-    # and `flet build` still exits 0 having shipped an app with no
-    # site-packages.
+# {% if sdk != 'android' %}
+    # NOT `-undefined dynamic_lookup`: with a real dylib an unresolved symbol is
+    # a defect that must fail at link, not at dlopen on a device. The headerpad
+    # is required: serious_python rewrites each extension's dependency from
+    # `@rpath/libgdal.dylib` to the much longer framework path, and without room
+    # in the Mach-O header install_name_tool fails, the relocation pass aborts,
+    # and `flet build` still exits 0 having shipped an app with no site-packages.
     LDFLAGS: '-Wl,-headerpad_max_install_names'
 # {% endif %}
 

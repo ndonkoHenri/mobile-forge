@@ -22,11 +22,7 @@ fi
 # and sqlite3 (opening proj.db); libtiff in turn needs libjpeg, and libcurl is
 # configured --with-openssl, hence ssl/crypto and psl. sqlite3 and z are iOS
 # system libraries and resolve from the SDK. Ordered by dependency, since these
-# are static archives.
-#
-# Under a static libproj these stayed undefined and every consumer's extension
-# link paid for them -- which is what the PROJ_LIBS chain in recipes/pyproj was
-# for. A real dylib settles it once, here.
+# are static archives. Consumers then link -lproj alone.
 IOS_PROJ_LINK_LIBS="-L$PLATLIB/opt/lib -ltiff -ljpeg -lcurl -lssl -lcrypto -lpsl -lsqlite3 -lz"
 
 if [ $CROSS_VENV_SDK == "android" ]; then

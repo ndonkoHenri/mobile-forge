@@ -21,10 +21,9 @@ fi
 #
 # GDAL_USE_EXTERNAL_LIBS=OFF makes GDAL use its own internal libtiff/libjpeg/
 # zlib/etc, renamed with a `gdal_` prefix so they cannot clash, so GDAL proper
-# needs very little here. PROJ is a real shared library of its own from
-# flet-libproj build 11, and it resolves ITS dependency tree (tiff, jpeg, curl,
-# ssl, crypto, psl) inside its own dylib -- so this list is just what GDAL
-# itself binds: the iOS system sqlite3 and zlib.
+# needs very little here. PROJ is flet-libproj's shared library and resolves
+# ITS dependency tree (tiff, jpeg, curl, ssl, crypto, psl) inside its own dylib,
+# so this list is just what GDAL itself binds: the iOS system sqlite3 and zlib.
 #
 # libgdal.dylib therefore comes out with exactly one @rpath dependency,
 # @rpath/libproj.dylib, and pyproj links the same image -- which is why
@@ -107,8 +106,7 @@ cmake --build . --target install
 #  2. Give it an @rpath install id, so a consumer that links it records
 #     @rpath/libgdal.dylib rather than this build directory.
 #
-# Android is untouched: it already builds shared and ships a plain versionless
-# .so through jniLibs.
+# Android builds shared and ships a plain versionless .so through jniLibs.
 if [ $CROSS_VENV_SDK != "android" ]; then
     echo "=== de-versioning libgdal.dylib for iOS ==="
     _real="$(find "$PREFIX/lib" -maxdepth 1 -type f -name "libgdal.*.dylib" | head -1)"

@@ -33,14 +33,8 @@ contribute survives:
                                            library names, not paths)
 
 `meta.yaml` sets the first two to `{platlib}/opt/include` and
-`{platlib}/opt/lib`. `GDAL_LIBS` is `gdal` alone on Android, where libgdal
-is a shared object carrying its own dependencies; on iOS every native dep is
-a static archive, so it lists the whole chain
-(`gdal,proj,tiff,curl,psl,sqlite3,jpeg,ssl,crypto,z`) to pull in the objects
-`libgdal.a` left undefined. PR #65 ("Support testing recipes on Android
-emulator and iOS simulator") records the symptom that forced the iOS list:
-`import rasterio` died in dyld on `_geod_init`, a libproj symbol that
-libgdal.a referenced but never carried.
+`{platlib}/opt/lib`, and `GDAL_LIBS` to `gdal` on both platforms: libgdal is
+a shared library that resolves its own dependencies.
 
 Without this patch the rasterio wheel either fails to build or links against
 the build machine's GDAL.

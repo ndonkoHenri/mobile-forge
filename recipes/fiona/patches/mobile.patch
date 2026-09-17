@@ -32,12 +32,8 @@ contribute is kept:
     GDAL_LIBS          ->  libraries      (comma-separated — these are library names, not paths)
 
 `meta.yaml` sets the first two to `{platlib}/opt/include` and
-`{platlib}/opt/lib`. `GDAL_LIBS` is just `gdal` on Android, where libgdal is
-a shared object that drags its own dependencies along; on iOS it is the
-whole static chain (`gdal,proj,tiff,curl,psl,sqlite3,jpeg,ssl,crypto,z`) so
-that fiona's own link pulls in the objects `libgdal.a` left undefined —
-without them dyld aborts at `import fiona`. The long comment in `meta.yaml`
-covers that half of the story.
+`{platlib}/opt/lib`, and `GDAL_LIBS` to `gdal` on both platforms: libgdal is
+a shared library that resolves its own dependencies.
 
 Hunk 1 deletes one of the two blank lines after the imports. It has no
 effect on anything; it is an artifact of how the patch was generated.
