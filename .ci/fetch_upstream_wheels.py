@@ -52,13 +52,17 @@ def add_marker(src: Path, dst: Path, original: str) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--mode", required=True, choices=["mobile", "pure"])
+    p.add_argument("--mode", required=True, choices=["mobile", "pure", "published"])
     p.add_argument("--pkg", required=True)
     p.add_argument("--version", required=True)
     p.add_argument("--python", required=True)
     p.add_argument("--platform", required=True, choices=["android", "ios"])
     p.add_argument("--out", required=True, type=Path)
     a = p.parse_args()
+
+    if a.mode == "published":  # control: nothing staged, so the app resolves pypi.flet.dev's wheel
+        print(json.dumps({"found": True, "wheels": []}))
+        return
 
     with urllib.request.urlopen(f"https://pypi.org/pypi/{a.pkg}/{a.version}/json", timeout=60) as r:
         urls = {f["filename"]: f["url"] for f in json.load(r)["urls"]}

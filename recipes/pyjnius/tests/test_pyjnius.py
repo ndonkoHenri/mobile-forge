@@ -9,12 +9,7 @@ def test_jvm_classes():
       - the recipe's startup hooks (in mobile-forge/serious_python) to
         have configured the right ClassLoader.
     Three layers in one assert."""
-    try:
-        from jnius import autoclass
-    except (ImportError, Exception):
-        # On non-Android hosts the import of jnius raises because no JVM
-        # can be located. Skip — this test is meaningful only on device.
-        pytest.skip("pyjnius requires an Android JVM at runtime")
+    from jnius import autoclass
 
     Build = autoclass("android.os.Build")
     brand = Build.BRAND
