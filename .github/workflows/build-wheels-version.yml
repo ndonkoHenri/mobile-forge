@@ -442,7 +442,7 @@ jobs:
           # API 28 minimum, NOT 24. mobile-forge wheels target API 24, but Flet's Android app shell
           # uses ImageDecoder.OnHeaderDecodedListener (added in API 28) — on a 24 AVD the recipe-tester
           # APK crashes at launch with ClassNotFoundException before Python ever starts.
-          api-level: 28
+          api-level: 34
           arch: x86_64
           target: default
           disable-animations: true
