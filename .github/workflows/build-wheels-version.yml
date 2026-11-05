@@ -57,12 +57,10 @@ on:
         required: false
         type: string
         default: ""
-      publish:
-        description: |
-          Publish the built wheels to pypi.flet.dev at the end of the run.
-        required: false
-        type: boolean
-        default: false
+      upstream_mode:
+        description: Which upstream wheel to evaluate (mobile or pure).
+        required: true
+        type: string
     secrets:
       GEMFURY_TOKEN:
         required: false
@@ -253,126 +251,26 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
-        with:
-          toolchain: stable
-          target: ${{ matrix.rust_targets }}
-          # Avoid release-time cache poisoning.
-          cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-
-      - name: Install NDK ${{ env.FORGE_NDK_VERSION }} for forge on Android
-        if: matrix.platform == 'android'
-        shell: bash
-        run: .ci/install_ndk.sh "$FORGE_NDK_VERSION"
-
-      - name: Run recipe `build.before_all` hooks
+      - name: Fetch upstream wheels
+        id: fetch
         shell: bash
         env:
-          PLATFORM: ${{ matrix.platform }}
           FORGE_PACKAGES: ${{ matrix.forge_packages }}
-          PREBUILD_RECIPES: ${{ inputs.prebuild_recipes }}
-        # Each recipe declares its own host build-tool setup in build.before_all
-        # (rendered per-platform); run it for every recipe this job builds
-        # (prebuild deps + the package) so the workflow stays recipe-agnostic.
-        # apt/brew installs and `brew link` persist to the Build step that follows.
-        run: |
-          set -euo pipefail
-          for r in $(echo "${PREBUILD_RECIPES},${FORGE_PACKAGES}" | tr ',' ' '); do
-            r="${r%%:*}"
-            [ -n "$r" ] && [ -f "recipes/$r/meta.yaml" ] || continue
-            cmd="$(uv run --script .ci/read_meta.py "recipes/$r/meta.yaml" build.before_all "$PLATFORM")"
-            [ -n "$cmd" ] || continue
-            echo "::group::before_all: $r"
-            bash -euxc "$cmd"
-            echo "::endgroup::"
-          done
-
-      - name: Build wheels
-        shell: bash
-        env:
-          FORGE_ARCH: ${{ matrix.forge_arch }}
-          FORGE_PACKAGES: ${{ matrix.forge_packages }}
-          PREBUILD_RECIPES: ${{ inputs.prebuild_recipes }}
-          PLATFORM: ${{ matrix.platform }}
-          PYTHON_BUILD_RUN_ID: ${{ inputs.python_build_run_id }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PIP_FIND_LINKS: ${{ github.workspace }}/dist
-          UV_PYTHON: ${{ inputs.python_version }}
-        run: |
-          set -euxo pipefail
-
-          . .ci/common.sh
-
-          if [[ "$PLATFORM" == "android" ]]; then
-            sudo apt-get update
-            # Baseline host tools needed broadly: sqlite3 and pkg-config (used by meson's py.dependency()
-            # to resolve the Python C dep via the .pc files setup.sh relocates; without
-            # it meson falls back to the bogus /usr/local/... sysconfig paths on 3.14).
-            sudo apt-get install -y sqlite3 pkg-config
-          fi
-
-          # Sets up and downloads the matching mobile-forge support package for the requested platform.
-          source ./setup.sh "$UV_PYTHON" "$PLATFORM"
-
-          # When prebuild_recipes is set, this step builds those recipes FIRST. Their wheels
-          # land in dist/ alongside the consumer wheels. PIP_FIND_LINKS points forge's
-          # host-dep pip resolution at dist/, so the consumer build below picks up the
-          # freshly-built libs over whatever pypi.flet.dev has published.
-          if [[ -n "${PREBUILD_RECIPES:-}" ]]; then
-            for lib in $(echo "$PREBUILD_RECIPES" | tr ',' ' '); do
-              # Respect each prebuild recipe's declared `platforms`.
-              declared=""
-              if [[ -f "recipes/$lib/meta.yaml" ]]; then
-                IFS=$'\t' read -r _ _ declared <<< "$(uv run --script .ci/read_meta.py "recipes/$lib/meta.yaml")"
-              fi
-              if [[ -n "$declared" && ! " $declared " == *" $PLATFORM "* ]]; then
-                echo "::notice::Prebuild skip ${lib} on ${PLATFORM} (platforms=[$declared])"
-                continue
-              fi
-              forge "$FORGE_ARCH" "$lib"
-            done
-          fi
-
-          IFS=' ' read -r -a packages <<< "$FORGE_PACKAGES"
-          for package in "${packages[@]}"; do
-            forge "$FORGE_ARCH" "$package"
-          done
-
-      - name: Drop support-tree dep wheels
-        if: always()
-        shell: bash
-        env:
           PLATFORM: ${{ matrix.platform }}
           PYTHON_SHORT: ${{ matrix.python_short }}
-        # The CPython support tree bundles native libs (openssl, xz, zstd, …) that
-        # make_dep_wheels.py wraps into `<lib>-<ver>-py3-none-<plat>.whl` so forge can
-        # resolve them as build deps — they must not be published as recipe wheels.
-        # Derive the set to drop from the support tree's VERSIONS manifest (the same
-        # source make_dep_wheels.py reads).
+          MODE: ${{ inputs.upstream_mode }}
         run: |
           set -euo pipefail
-          if [[ "$PLATFORM" == "android" ]]; then
-            os_name="android"; support="${MOBILE_FORGE_ANDROID_SUPPORT_PATH:-}"
+          result="$(python3 -I .ci/fetch_upstream_wheels.py --mode "$MODE" --pkg "${FORGE_PACKAGES%%:*}" \
+            --version "${FORGE_PACKAGES#*:}" --python "$PYTHON_SHORT" --platform "$PLATFORM" --out dist)"
+          echo "$result"
+          printf 'mode=%s pkg=%s py=%s platform=%s %s\n' "$MODE" "$FORGE_PACKAGES" "$PYTHON_SHORT" "$PLATFORM" "$result" > eval-result.txt
+          if [[ "$result" == *'"found": true'* ]]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
           else
-            os_name="iOS"; support="${MOBILE_FORGE_IOS_SUPPORT_PATH:-}"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No upstream $MODE wheel for ${FORGE_PACKAGES} py${PYTHON_SHORT} ${PLATFORM}; skipping the test."
           fi
-          versions="${support}/support/${PYTHON_SHORT}/${os_name}/VERSIONS"
-          if [[ ! -f "$versions" ]]; then
-            echo "::warning::No VERSIONS at '$versions' — skipping support-wheel drop"
-            exit 0
-          fi
-          echo "Dropping support-tree dep wheels declared in $versions"
-          while IFS= read -r line || [[ -n "$line" ]]; do
-            [[ "$line" == *:* ]] || continue
-            key="$(printf '%s' "${line%%:*}" | tr '[:upper:]' '[:lower:]' | xargs)"
-            case "$key" in
-              "python version"|"build"|"min "*) continue ;;
-            esac
-            [[ -n "$key" ]] || continue
-            echo "  - dropping dist/${key}-*"
-            rm -f "dist/${key}-"*
-          done < "$versions"
 
       - name: Summarize built wheels
         if: always()
@@ -417,8 +315,14 @@ jobs:
           MOBILE_TEST_PYTHONS: ${{ inputs.mobile_test_pythons }}
           EVENT_NAME: ${{ github.event_name }}
           GIT_REF: ${{ github.ref }}
+          UPSTREAM_FOUND: ${{ steps.fetch.outputs.found }}
         run: |
           set -euo pipefail
+          # Never fall through to testing forge's wheel when upstream has none.
+          if [[ "$UPSTREAM_FOUND" != "true" ]]; then
+            echo "has_tests=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           pkg_name="${FORGE_PACKAGES%%:*}"
           pkg_version="${FORGE_PACKAGES#*:}"
           [[ "$pkg_version" == "$FORGE_PACKAGES" ]] && pkg_version=""
@@ -601,29 +505,18 @@ jobs:
         run: .ci/run_ios_test.sh
 
       - name: Upload test artifacts
-        if: always() && steps.detect-tests.outputs.has_tests == 'true'
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-${{ matrix.artifact_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            eval-result.txt
             console.log
             logcat-on-failure.txt
             screen-on-failure.png
             syslog-on-failure.txt
           if-no-files-found: ignore
-          retention-days: 90
-
-      - name: Publish wheels
-        # Publish when a caller explicitly opts in (`publish: true`),
-        # OR on the default automatic path (push to main).
-        if: ${{ success() && hashFiles('dist/*.whl') != '' && (inputs.publish || (github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.python_build_run_id == '')) }}
-        shell: bash
-        env:
-          GEMFURY_TOKEN: ${{ secrets.GEMFURY_TOKEN }}
-        run: |
-          set -euxo pipefail
-          . .ci/common.sh
-          publish_to_pypi dist/*.whl
+          retention-days: 30
 
       - name: Upload logs on success
         if: ${{ success() && hashFiles('logs/*.log') != '' }}

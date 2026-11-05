@@ -55,6 +55,16 @@ def _run_pytest() -> None:
     # correct on every platform / Flet version.
     tests_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recipe_tests")
 
+    # Upstream-wheel evaluation: prove which wheel is on the device.
+    import importlib.metadata
+
+    marked = [
+        f"{d.name}=={d.version} from {d.read_text('UPSTREAM_EVAL')}"
+        for d in importlib.metadata.distributions()
+        if d.read_text("UPSTREAM_EVAL")
+    ]
+    print(f"UPSTREAM-EVAL-PROVENANCE: {marked or 'NONE'}", flush=True)
+
     EXIT_CODE = pytest.main(
         [
             "-v",
