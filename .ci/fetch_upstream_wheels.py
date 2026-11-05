@@ -29,15 +29,16 @@ def mobile_targets(files: list[str], py: str, platform: str) -> list[tuple[str, 
     return out
 
 
-def pure_targets(files: list[str], platform: str) -> list[tuple[str, str]]:
-    """One platform-tagged copy of the pure wheel per slice the build resolves."""
+def pure_targets(files: list[str], py: str, platform: str) -> list[tuple[str, str]]:
+    """One copy of the pure wheel per slice, tagged cpXY-cpXY because that outranks forge's own."""
     pure = [fn for fn in files if fn.endswith("-none-any.whl")]
     if not pure:
         return []
     fn = pure[0]
     stem = re.sub(r"-py[0-9.py]+-none-any\.whl$", "", fn)
     plats = ["android_24_x86_64"] if platform == "android" else [f"ios_13_0_{s}" for s in IOS_SLICES]
-    return [(fn, f"{stem}-py3-none-{p}.whl") for p in plats]
+    tag = f"cp{py.replace('.', '')}"
+    return [(fn, f"{stem}-{tag}-{tag}-{p}.whl") for p in plats]
 
 
 def add_marker(src: Path, dst: Path, original: str) -> None:
@@ -62,7 +63,7 @@ def main() -> None:
     with urllib.request.urlopen(f"https://pypi.org/pypi/{a.pkg}/{a.version}/json", timeout=60) as r:
         urls = {f["filename"]: f["url"] for f in json.load(r)["urls"]}
     names = sorted(urls)
-    targets = mobile_targets(names, a.python, a.platform) if a.mode == "mobile" else pure_targets(names, a.platform)
+    targets = mobile_targets(names, a.python, a.platform) if a.mode == "mobile" else pure_targets(names, a.python, a.platform)
     if a.mode == "mobile" and a.platform == "ios" and not any("arm64_iphonesimulator" in t[0] for t in targets):
         targets = []  # the arm64 runner cannot run what the other slices would give it
 
